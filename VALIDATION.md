@@ -1,5 +1,13 @@
 # Validation record — 2026-11-07
 
+## Logo and README GUI preview
+
+- Created assets/logo.png using the built-in image-generation tool; the prompt is recorded in assets/logo_prompt.txt. Converted it to a 48-pixel Tk icon and a multi-resolution Windows ICO, preserving transparency.
+- Added the logo to the application header/window and PyInstaller build. Rebuilt dist/XDiffCalculator.exe (24,132,337 bytes).
+- All 30 existing tests passed in ImageD11_py3p12. The rebuilt executable smoke test passed with 16 powder lines, 61 grain events, 9 detector presets and 175 example CIFs.
+- Native computer-use screenshot capture timed out. With the user's approval, Pillow captured the actual Tk demo window instead. Visually reviewed docs/images/gui.png (1400 x 845 pixels): Fe bcc, 40 keV, EIGER2 X CdTe 4M, 150 mm distance and zero tilts. The screenshot includes the new logo, input controls, intensity scale and reflection table.
+- README references both images using repository-relative paths. No commit or push was performed.
+
 ## Detector tilts and GitHub documentation
 
 - Added Tilt X/Y/Z inputs in degrees, default zero. Right-handed fixed lab rotations are applied X then Y then Z, R=Rz Ry Rx, about the direct-beam point (D,0,0); D remains the beam-axis distance.

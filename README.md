@@ -1,11 +1,19 @@
 # XDiffCalculator
 
+<img src="assets/logo.png" alt="XDiffCalculator logo: an X-ray beam illuminating a crystal and producing diffraction rings" width="140">
+
 An offline Windows application for simulating X-ray powder diffraction rings and diffraction spots from polycrystals.
 
 **Author:** Haixing Fang  
 **Contact:** haixingfang868@gmail.com
 
 Use a CIF structure, X-ray energy and detector geometry to calculate reflections and visualize their positions and relative intensities. The incident beam is parallel, and all grains are located at the sample origin.
+
+## GUI preview
+
+![XDiffCalculator GUI showing simulated Fe powder rings, detector settings and the reflection table](docs/images/gui.png)
+
+The screenshot shows the bundled Fe bcc example at 40 keV with an EIGER2 X CdTe 4M detector, a detector distance of 150 mm and zero detector tilt. Ring colours indicate relative calculated intensity.
 
 ## Features
 
@@ -217,6 +225,8 @@ The smoke test exercises an invisible GUI and checks bundled resources and 300-d
 | `snapshot.py` | High-resolution PNG rendering |
 | `detectors.json` | Presets and source references |
 | `examples/` | Example CIFs and orientation data |
+| `assets/` | Application logo, Windows icon and logo-generation prompt |
+| `docs/images/` | GUI screenshot used in this README |
 | `tests/` | Automated calculation tests |
 | `build_windows.ps1` | Standalone Windows build |
 
