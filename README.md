@@ -21,7 +21,7 @@ Use a CIF structure, X-ray energy and detector geometry to calculate reflections
 
 ## Run on Windows
 
-Download `XDiffCalculator.exe` from the repository's **Releases** section once a release has been published, or build it from source.
+Download `XDiffCalculator.exe` from the repository's "dist" folder for Windows x64, or build it from source.
 
 The file produced at `dist/XDiffCalculator.exe` is a standalone **Windows x64** application. It bundles Python, required libraries, detector presets and the example CIF files present at build time. No Python or Conda installation is required to run it. Browse can load additional CIF files without rebuilding.
 
@@ -221,8 +221,6 @@ The smoke test exercises an invisible GUI and checks bundled resources and 300-d
 | `build_windows.ps1` | Standalone Windows build |
 
 Example Fe/Al structures are illustrative rather than certified calibrants. Other supplied CIFs are bundled unchanged; discoverability does not guarantee valid structure data.
-
-For first-time publishing, see [GITHUB_SETUP.md](GITHUB_SETUP.md).
 
 ## References
 
