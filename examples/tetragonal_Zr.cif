@@ -1,0 +1,83 @@
+
+#(C) 2018 by FIZ Karlsruhe - Leibniz Institute for Information Infrastructure.  All rights reserved.
+data_86607-ICSD
+_database_code_ICSD 86607
+_audit_creation_date 2000-07-15
+_audit_update_record 2008-08-01
+_chemical_name_systematic 'Zirconium yttrium cerium oxide (0.8/0.04/0.16/1.99)'
+_chemical_formula_structural '(Zr0.8 Y0.04 Ce0.16) O1.992'
+_chemical_formula_sum 'Ce0.16 O1.992 Y0.04 Zr0.8'
+_chemical_name_structure_type Zirconia-ZrO2(HT)
+_exptl_crystal_density_diffrn 6.28
+_publ_section_title
+
+;
+Neutron diffraction study of tetragonal zirconias containing tetravalent
+dopants
+;
+loop_
+_citation_id
+_citation_journal_full
+_citation_year
+_citation_journal_volume
+_citation_page_first
+_citation_page_last
+_citation_journal_id_ASTM
+primary 'Australian Journal of Physics' 1998 51 539 545 AUJPAS
+loop_
+_publ_author_name
+'Hunter, B.A.'
+'Howard, C.J.'
+'Kim, D.J.'
+_cell_length_a 3.6401(1)
+_cell_length_b 3.6401(1)
+_cell_length_c 5.2227(2)
+_cell_angle_alpha 90.
+_cell_angle_beta 90.
+_cell_angle_gamma 90.
+_cell_volume 69.2
+_cell_formula_units_Z 2
+_symmetry_space_group_name_H-M 'P 42/n m c Z'
+_symmetry_Int_Tables_number 137
+loop_
+_symmetry_equiv_pos_site_id
+_symmetry_equiv_pos_as_xyz
+1 'y+1/2, x+1/2, -z+1/2'
+2 '-y, x+1/2, -z+1/2'
+3 'y+1/2, -x, -z+1/2'
+4 '-y, -x, -z+1/2'
+5 'x+1/2, y+1/2, -z'
+6 '-x, y+1/2, -z'
+7 'x+1/2, -y, -z'
+8 '-x, -y, -z'
+9 '-y+1/2, -x+1/2, z+1/2'
+10 'y, -x+1/2, z+1/2'
+11 '-y+1/2, x, z+1/2'
+12 'y, x, z+1/2'
+13 '-x+1/2, -y+1/2, z'
+14 'x, -y+1/2, z'
+15 '-x+1/2, y, z'
+16 'x, y, z'
+loop_
+_atom_type_symbol
+_atom_type_oxidation_number
+Zr4+ 4
+Y3+ 3
+Ce4+ 4
+O2- -2
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_symmetry_multiplicity
+_atom_site_Wyckoff_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_B_iso_or_equiv
+_atom_site_occupancy
+_atom_site_attached_hydrogens
+Zr1 Zr4+ 2 a 0.75 0.25 0.75 0.40(3) 0.8 0
+Y1 Y3+ 2 a 0.75 0.25 0.75 0.40(3) 0.04 0
+Ce1 Ce4+ 2 a 0.75 0.25 0.75 0.40(3) 0.16 0
+O1 O2- 4 d 0.25 0.25 0.4608(1) 0.88(3) 0.996(8) 0
+#End of TTdata_86607-ICSD

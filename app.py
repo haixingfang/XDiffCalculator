@@ -1,0 +1,1025 @@
+# -*- coding: utf-8 -*-
+# Author: Haixing Fang
+# Email: haixingfang868@gmail.com
+"""Lightweight offline X-ray powder and polycrystal diffraction calculator."""
+from __future__ import division
+
+import argparse
+import csv
+import json
+import math
+import os
+import queue
+import threading
+import tempfile
+import traceback
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from snapshot import canvas_snapshot
+
+from diffraction import cif_blocks, crystal_metadata, load_crystal, reflections, powder_lines, simulate_spots, polarization_factor
+from geometry import HC_KEV_ANGSTROM, detector_geometry, maximum_two_theta, pixel_lab, ray_detector_hit, clip_detector_segment
+from orientations import random_orientations, load_orientations, save_orientations
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+DEFAULTS = dict(cif=os.path.join(ROOT, 'examples', 'Fe_bcc.cif'), block='Fe_bcc', mode='Powder rings',
+                orientation_file='', number='200', seed='200', energy='40', distance='150', polarization='0.95',
+                preset='EIGER2 X CdTe 4M', columns='2068', rows='2162', pixel_y='75', pixel_z='75',
+                center_col='1033.5', center_row='1080.5', tilt_x='0', tilt_y='0', tilt_z='0', max_tth='40', start='0', end='2', step='0.25', minimum='0.1')
+
+
+def example_cifs(directory=None):
+    """List local example CIF filenames, case-insensitively, without parsing them."""
+    directory = os.path.join(ROOT, 'examples') if directory is None else directory
+    if not os.path.isdir(directory):
+        return []
+    return sorted([name for name in os.listdir(directory) if name.lower().endswith('.cif')
+                   and os.path.isfile(os.path.join(directory, name))], key=str.lower)
+
+
+def settings_for_disk(settings):
+    """Preserve bundled example references across single-file extraction directories."""
+    result = dict(settings)
+    path = os.path.abspath(result['cif'])
+    if os.path.dirname(path) == os.path.join(ROOT, 'examples'):
+        result['cif'] = '@example/' + os.path.basename(path)
+    return result
+
+
+def settings_from_disk(settings):
+    """Resolve explicitly marked bundled examples without changing external paths."""
+    result = dict(settings)
+    value = result.get('cif', '')
+    if isinstance(value, str) and value.startswith('@example/'):
+        name = value[len('@example/'):]
+        if name != os.path.basename(name) or name in ('', '.', '..'):
+            raise ValueError('Invalid bundled-example reference.')
+        result['cif'] = os.path.join(ROOT, 'examples', name)
+    return result
+
+
+def calculate(settings, cancel=None, progress=None):
+    """Calculate one immutable input snapshot, without touching Tk widgets.
+    Args:
+        settings: String-valued input dictionary, following DEFAULTS.
+        cancel: Optional threading.Event.
+        progress: Optional completed/total grain callback.
+    Returns:
+        result: Detector, crystal summary, reflections, powder lines and spot events.
+    """
+    detector = detector_geometry(settings['distance'], settings['columns'], settings['rows'], settings['pixel_y'],
+                                 settings['pixel_z'], settings['center_col'], settings['center_row'],
+                                 settings.get('tilt_x', 0), settings.get('tilt_y', 0), settings.get('tilt_z', 0))
+    energy = float(settings['energy'])
+    maximum = float(settings['max_tth'])
+    if not math.isfinite(maximum) or not 0 < maximum < 90:
+        raise ValueError('Maximum 2theta must lie between 0 and 90 degrees.')
+    minimum = float(settings['minimum'])
+    if not math.isfinite(minimum) or not 0 <= minimum <= 100:
+        raise ValueError('Minimum relative intensity must lie in [0,100].')
+    structure = load_crystal(settings['cif'], settings['block'] or None)
+    records = reflections(structure, energy, min(maximum, maximum_two_theta(detector)), cancel)
+    value = str(settings.get('polarization', '0.95')).strip()
+    polarization = None if not value else float(value)
+    polarization_factor(0, polarization=polarization)
+    lines = powder_lines(records, polarization)
+    matrices, events = [], []
+    if settings['mode'] == 'Random grains':
+        matrices = random_orientations(int(settings['number']), int(settings['seed']))
+    elif settings['mode'] == 'Imported orientations':
+        matrices = load_orientations(settings['orientation_file'])
+    elif settings['mode'] != 'Powder rings':
+        raise ValueError('Unknown sample mode.')
+    if matrices:
+        events = simulate_spots(records, matrices, energy, detector, settings['start'], settings['end'], settings['step'], cancel, progress, polarization)
+    if cancel is not None and cancel.is_set():
+        raise RuntimeError('Calculation cancelled.')
+    if matrices:
+        intensity_max = max([event['intensity'] for event in events] or [1])
+    else:
+        intensity_max = max([line['sum_f2']*line['lorentz']*max(polarization_factor(line['two_theta'], 0, polarization),
+                            polarization_factor(line['two_theta'], math.pi/2, polarization)) for line in lines] or [1])
+    return dict(settings=dict(settings), detector=detector, reflections=records, lines=lines, matrices=matrices, events=events,
+                polarization=polarization, intensity_max=intensity_max,
+                cell=list(structure.cell.parameters), spacegroup=structure.spacegroup.xhm(), wavelength=HC_KEV_ANGSTROM/energy)
+
+
+def intensity_color(fraction):
+    """Map a linear intensity fraction to the same blue-cyan-yellow scale everywhere."""
+    value = max(0, min(1, fraction))
+    stops = [(30, 55, 145), (20, 185, 200), (255, 240, 70)]
+    index = min(1, int(value*2))
+    weight = value*2 - index
+    rgb = [int(round(a + weight*(b - a))) for a, b in zip(stops[index], stops[index + 1])]
+    return '#{:02x}{:02x}{:02x}'.format(*rgb)
+
+
+def ring_segments(line, detector, polarization, maximum, guide=False):
+    """Intersect a diffraction cone with the tilted detector and yield coloured segments."""
+    angle = math.radians(line['two_theta'])
+    cosine, sine = math.cos(angle), math.sin(angle)
+    first = ray_detector_hit((cosine, sine, 0), detector, clip=False)
+    for index in range(360):
+        angle0, angle1 = math.radians(index), math.radians(index + 1)
+        last = ray_detector_hit((cosine, sine*math.cos(angle1), sine*math.sin(angle1)), detector, clip=False)
+        segment = clip_detector_segment(first, last, detector) if first is not None and last is not None else None
+        first = last
+        if segment is None:
+            continue
+        intensity = line['sum_f2']*line['lorentz']*polarization_factor(line['two_theta'], (angle0 + angle1)/2, polarization)
+        color = '#46798e' if guide else intensity_color(intensity/maximum)
+        yield segment + (color,)
+
+
+class Application:
+    """One-window desktop interface; expensive calculations run in a worker thread."""
+
+    def __init__(self, root):
+        """Create controls, detector canvas and reflection table."""
+        self.root, self.result = root, None
+        self.messages, self.cancel_event = queue.Queue(), threading.Event()
+        self.worker, self.selected_line, self.drawn_spots = None, None, []
+        self.hover_items, self.hover_xy = {}, None
+        self.busy = False
+        self.zoom = 1.0
+        self.view_center = (0.5, 0.5)
+        self.pan_anchor = None
+        self.drag_start = None
+        self.drag_moved = False
+        self.rectangle_mode = tk.BooleanVar(value=False)
+        self.metadata_job = None
+        self.vars = dict((key, tk.StringVar(value=value)) for key, value in DEFAULTS.items())
+        self.status = tk.StringVar(value='Choose a CIF and calculate. All grains are at the origin.')
+        self.integrated = tk.BooleanVar(value=True)
+        self.overlay = tk.BooleanVar(value=True)
+        self.frame = tk.IntVar(value=0)
+        root.title('XDiffCalculator | powder rings & polycrystal spots')
+        root.geometry('1260x{}'.format(max(680, min(1000, root.winfo_screenheight() - 80))))
+        root.minsize(1000, 680)
+        root.protocol('WM_DELETE_WINDOW', self.close)
+        with open(os.path.join(ROOT, 'detectors.json'), encoding='utf-8') as stream:
+            self.presets = json.load(stream)
+
+        background = ttk.Style(root).lookup('TFrame', 'background') or root.cget('background')
+        self.workspace_panes = tk.PanedWindow(root, orient='horizontal', sashwidth=7, sashrelief='raised', borderwidth=0, background=background, opaqueresize=True)
+        self.workspace_panes.pack(fill='both', expand=True)
+        left = ttk.Frame(self.workspace_panes, padding=10)
+        self.workspace_panes.add(left, minsize=360, width=380, stretch='never')
+        ttk.Label(left, text='XDiffCalculator', font=('Segoe UI', 17, 'bold')).pack(anchor='w')
+        ttk.Label(left, text='Parallel beam / point grains / offline').pack(anchor='w', pady=(0, 10))
+        panel = tk.Canvas(left, width=350, highlightthickness=0, background=background)
+        scrollbar = ttk.Scrollbar(left, orient='vertical', command=panel.yview)
+        scrollbar.pack(side='right', fill='y')
+        panel.pack(fill='both', expand=True)
+        panel.configure(yscrollcommand=scrollbar.set)
+        form = ttk.Frame(panel)
+        form_window = panel.create_window((0, 0), window=form, anchor='nw', width=342)
+        panel.bind('<Configure>', lambda event: panel.itemconfigure(form_window, width=event.width))
+        form.columnconfigure(1, weight=1)
+        form.bind('<Configure>', lambda event: panel.configure(scrollregion=panel.bbox('all')))
+        self.form, self.row = form, 0
+        self.section('SAMPLE')
+        self.example_name = tk.StringVar(value=os.path.basename(DEFAULTS['cif']))
+        ttk.Label(form, text='Example crystal').grid(row=self.row, column=0, sticky='w', pady=3)
+        self.examples = ttk.Combobox(form, textvariable=self.example_name, values=example_cifs(), state='readonly', width=20, height=12)
+        self.examples.grid(row=self.row, column=1, columnspan=2, sticky='ew', padx=4)
+        self.examples.configure(postcommand=lambda: self.examples.configure(values=example_cifs()))
+        self.examples.bind('<<ComboboxSelected>>', self.select_example)
+        self.row += 1
+        self.field('CIF file', 'cif', button=('Browse', self.browse_cif))
+        self.blocks = self.field('Structure block', 'block', choices=cif_blocks(DEFAULTS['cif']))
+        self.crystal_info = tk.StringVar()
+        self.crystal_grid = ttk.Frame(form)
+        self.crystal_grid.grid(row=self.row, column=0, columnspan=3, sticky='ew', pady=(8, 4))
+        self.crystal_values = [tk.StringVar(value='—') for index in range(7)]
+        for index, heading in enumerate(('a (Å)', 'b (Å)', 'c (Å)', 'α (°)', 'β (°)', 'γ (°)', 'sgno')):
+            self.crystal_grid.columnconfigure(index, weight=1, uniform='cell')
+            ttk.Label(self.crystal_grid, text=heading, anchor='center', font=('Segoe UI', 9)).grid(row=0, column=index, sticky='ew', pady=(0, 3))
+            ttk.Label(self.crystal_grid, textvariable=self.crystal_values[index], anchor='center', font=('Segoe UI', 9)).grid(row=1, column=index, sticky='ew')
+        self.row += 1
+        ttk.Label(form, textvariable=self.crystal_info, wraplength=330, justify='left').grid(row=self.row, column=0, columnspan=3, sticky='w')
+        self.row += 1
+        for key in ('cif', 'block'):
+            self.vars[key].trace_add('write', self.schedule_crystal_info)
+        self.update_crystal_info()
+        self.field('Sample mode', 'mode', choices=['Powder rings', 'Random grains', 'Imported orientations'])
+        self.field('Number of grains', 'number')
+        self.field('Random seed', 'seed')
+        self.field('U matrix file', 'orientation_file', button=('Browse', self.browse_orientations))
+        self.section('BEAM & DETECTOR')
+        self.field('Energy [keV]', 'energy')
+        self.field('Polarization [-1,1]', 'polarization')
+        ttk.Label(form, text='0.95: nearly horizontal; 0: unpolarized.\nBlank: disable polarization factor.', wraplength=330).grid(row=self.row, column=0, columnspan=3, sticky='w')
+        self.row += 1
+        self.field('Distance [mm]', 'distance')
+        for title, key in [('Tilt X [deg]', 'tilt_x'), ('Tilt Y [deg]', 'tilt_y'), ('Tilt Z [deg]', 'tilt_z')]:
+            self.field(title, key)
+        ttk.Label(form, text='Tilts: right-handed about fixed lab X, Y, Z,\napplied X → Y → Z at the direct-beam point.\nDistance is along +X; beam centre stays fixed.', wraplength=330).grid(row=self.row, column=0, columnspan=3, sticky='w')
+        self.row += 1
+        preset = self.field('Detector preset', 'preset', choices=list(self.presets) + ['Custom'])
+        preset.bind('<<ComboboxSelected>>', self.apply_preset)
+        for title, key in [('Columns', 'columns'), ('Rows', 'rows'), ('Pixel Y [um]', 'pixel_y'), ('Pixel Z [um]', 'pixel_z'),
+                           ('Beam centre column', 'center_col'), ('Beam centre row', 'center_row'), ('Max 2theta [deg]', 'max_tth')]:
+            widget = self.field(title, key)
+            if key in ('columns', 'rows', 'pixel_y', 'pixel_z'):
+                widget.bind('<KeyRelease>', lambda event: self.vars['preset'].set('Custom'))
+        self.section('ROTATION SCAN (GRAIN MODES)')
+        self.scan_fields = []
+        for title, key in [('Omega start [deg]', 'start'), ('Omega end (excluded) [deg]', 'end'), ('Frame width [deg]', 'step')]:
+            self.scan_fields.append(self.field(title, key))
+        self.scan_help = ttk.Label(form, wraplength=330, justify='left')
+        self.scan_help.grid(row=self.row, column=0, columnspan=3, sticky='w', pady=5)
+        self.row += 1
+        self.vars['mode'].trace_add('write', self.update_scan_inputs)
+        self.update_scan_inputs()
+        self.field('Display minimum [%]', 'minimum')
+        buttons = ttk.Frame(form)
+        buttons.grid(row=self.row, column=0, columnspan=3, pady=10, sticky='ew')
+        self.run_button = ttk.Button(buttons, text='Calculate', command=self.run)
+        self.run_button.pack(side='left')
+        ttk.Button(buttons, text='Cancel', command=self.cancel_event.set).pack(side='left', padx=5)
+        ttk.Button(buttons, text='Help', command=self.help).pack(side='left')
+        self.row += 1
+        for label, command in [('Save settings', self.save_settings), ('Load settings', self.load_settings),
+                               ('Export CSV tables', self.export_csv), ('Export orientations', self.export_orientations), ('Export snapshot as png', self.export_png)]:
+            ttk.Button(form, text=label, command=command).grid(row=self.row, column=0, columnspan=3, sticky='ew', pady=2)
+            self.row += 1
+
+        right = ttk.Frame(self.workspace_panes, padding=10)
+        self.workspace_panes.add(right, minsize=600, stretch='always')
+        self.plot_panes = tk.PanedWindow(right, orient='vertical', sashwidth=7, sashrelief='raised', borderwidth=0, background=background, opaqueresize=True)
+        self.plot_panes.pack(fill='both', expand=True)
+        plot_area = ttk.Frame(self.plot_panes)
+        table_area = ttk.Frame(self.plot_panes)
+        self.plot_panes.add(plot_area, minsize=340, height=700, stretch='always')
+        self.plot_panes.add(table_area, minsize=170, height=190, stretch='never')
+        self.info = ttk.Label(plot_area, text='X beam | Z up | +omega CCW viewed from +Z', wraplength=820)
+        self.info.pack(anchor='w', pady=(0, 6))
+        self.canvas = tk.Canvas(plot_area, background='#101c2c', highlightthickness=0, height=120)
+        self.canvas.pack(fill='both', expand=True)
+        self.canvas.bind('<Configure>', lambda event: self.draw())
+        self.canvas.bind('<Button-1>', self.start_drag)
+        self.canvas.bind('<B1-Motion>', self.drag_view)
+        self.canvas.bind('<ButtonRelease-1>', self.end_drag)
+        self.canvas.bind('<MouseWheel>', self.zoom_wheel)
+        self.canvas.bind('<Motion>', self.hover_info)
+        self.canvas.bind('<Leave>', self.clear_hover)
+        self.cursor_info = tk.StringVar(value='Move over the detector to inspect pixel coordinates and relative signal intensity.')
+        cursor_label = tk.Label(plot_area, textvariable=self.cursor_info, anchor='w', justify='left', wraplength=740, height=3, width=1,
+                                background=background, foreground=ttk.Style(root).lookup('TLabel', 'foreground') or '#000000', font='TkDefaultFont', borderwidth=0)
+        cursor_label.pack(fill='x', pady=(3, 0))
+        zoom_bar = ttk.Frame(plot_area)
+        zoom_bar.pack(fill='x', pady=3)
+        ttk.Checkbutton(zoom_bar, text='Rectangle zoom', variable=self.rectangle_mode, command=self.change_drag_mode).pack(side='left', padx=(0, 4))
+        ttk.Button(zoom_bar, text='Restore view', command=self.restore_view).pack(side='left')
+        self.zoom_info = tk.StringVar(value='1.00x | Wheel: zoom at cursor; left-drag: pan')
+        ttk.Label(zoom_bar, textvariable=self.zoom_info).pack(side='left', padx=8)
+        toolbar = ttk.Frame(plot_area)
+        toolbar.pack(fill='x', pady=5)
+        self.integrated_box = ttk.Checkbutton(toolbar, text='All frames (integrated scan)', variable=self.integrated, command=self.draw)
+        self.integrated_box.pack(side='left')
+        ttk.Checkbutton(toolbar, text='Ring overlay', variable=self.overlay, command=self.draw).pack(side='left', padx=8)
+        ttk.Label(toolbar, text='Frame (zero-based):').pack(side='left')
+        self.frame_box = ttk.Spinbox(toolbar, from_=0, to=0, width=7, textvariable=self.frame, command=self.draw)
+        self.frame_box.pack(side='left')
+        self.frame_box.bind('<Return>', lambda event: self.draw())
+        self.view_help = ttk.Label(plot_area, wraplength=740, justify='left')
+        self.view_help.pack(anchor='w', pady=(0, 5))
+        self.update_scan_view()
+        table_area.rowconfigure(0, weight=1)
+        table_area.columnconfigure(0, weight=1)
+        columns = ('index', 'hkl', 'd', 'inv_d', 'tth', 'mult', 'intensity', 'relative')
+        self.table = ttk.Treeview(table_area, columns=columns, show='headings', height=8, selectmode='browse')
+        for key, title, width in zip(columns, ['Index', 'HKL representative', 'd [Å]', '1/d [Å⁻¹]', '2theta [deg]', 'Multiplicities', 'Intensity [a.u.]', 'Relative [%]'], [45, 125, 80, 90, 90, 95, 110, 85]):
+            self.table.heading(key, text=title)
+            self.table.column(key, width=width, minwidth=width, anchor='center')
+        table_scroll = ttk.Scrollbar(table_area, orient='vertical', command=self.table.yview)
+        table_horizontal = ttk.Scrollbar(table_area, orient='horizontal', command=self.table.xview)
+        self.table.configure(yscrollcommand=table_scroll.set, xscrollcommand=table_horizontal.set)
+        table_scroll.grid(row=0, column=1, sticky='ns')
+        table_horizontal.grid(row=1, column=0, sticky='ew')
+        self.table.grid(row=0, column=0, sticky='nsew')
+        self.table.bind('<<TreeviewSelect>>', self.highlight)
+        table_note = ttk.Label(table_area, text='Table: powder-profile intensities (azimuth-averaged P). Plot: relative F² × P × L; grey rings in grain mode are guides. No absolute photon counts or absorption/detector response.', wraplength=740)
+        table_note.grid(row=2, column=0, columnspan=2, sticky='ew', pady=5)
+        status_label = ttk.Label(table_area, textvariable=self.status, wraplength=820)
+        status_label.grid(row=3, column=0, columnspan=2, sticky='ew')
+        table_area.bind('<Configure>', lambda event: [label.configure(wraplength=max(200, event.width - 10)) for label in (table_note, status_label)])
+        plot_area.bind('<Configure>', lambda event: [label.configure(wraplength=max(200, event.width - 10)) for label in (self.info, self.view_help, cursor_label)])
+        root.after(100, self.poll)
+
+    def schedule_crystal_info(self, *args):
+        """Clear old metadata immediately and coalesce edits to the selected CIF/block."""
+        self.crystal_info.set('Reading crystal metadata...')
+        for variable in self.crystal_values:
+            variable.set('—')
+        if self.metadata_job is not None:
+            self.root.after_cancel(self.metadata_job)
+        self.metadata_job = self.root.after(150, self.update_crystal_info)
+
+    def update_crystal_info(self):
+        """Display cell and space-group number for the currently selected input."""
+        if self.metadata_job is not None:
+            self.root.after_cancel(self.metadata_job)
+            self.metadata_job = None
+        try:
+            metadata = crystal_metadata(self.vars['cif'].get(), self.vars['block'].get() or None)
+            values = ['{:.5g}'.format(value) for value in metadata['cell']] + [metadata['sgno'] if metadata['sgno'] is not None else '—']
+            for variable, value in zip(self.crystal_values, values):
+                variable.set(value)
+            text = '' if metadata['sgno'] is not None else 'Space group could not be resolved.'
+        except Exception as error:
+            for variable in self.crystal_values:
+                variable.set('—')
+            text = 'Crystal metadata unavailable: {}'.format(error)
+        self.crystal_info.set(text)
+
+    def view_transform(self):
+        """Return detector-to-canvas scale/origin and a fixed plotting viewport."""
+        d = self.result['detector']
+        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        left, top, right, bottom = 30, 35, max(31, width - 130), max(36, height - 35)
+        scale = min((right - left)/d['columns'], (bottom - top)/d['rows'])*self.zoom
+        x0 = (left + right)/2 - self.view_center[0]*d['columns']*scale
+        y0 = (top + bottom)/2 - self.view_center[1]*d['rows']*scale
+        return scale, x0, y0, (left, top, right, bottom)
+
+    def zoom_view(self, factor, x=None, y=None):
+        """Zoom about the viewport centre or a supplied cursor, preserving that point."""
+        if self.result is None:
+            return
+        scale, x0, y0, viewport = self.view_transform()
+        left, top, right, bottom = viewport
+        x, y = ((left + right)/2, (top + bottom)/2) if x is None else (x, y)
+        if not left <= x <= right or not top <= y <= bottom:
+            return
+        d = self.result['detector']
+        old_zoom = self.zoom
+        self.zoom = max(1, min(32, self.zoom*factor))
+        new_scale = scale*self.zoom/old_zoom
+        self.view_center = (((x - x0)/scale - (x - (left + right)/2)/new_scale)/d['columns'],
+                            ((y - y0)/scale - (y - (top + bottom)/2)/new_scale)/d['rows'])
+        self.view_center = tuple(max(0, min(1, value)) for value in self.view_center)
+        if self.zoom == 1:
+            self.view_center = (0.5, 0.5)
+        self.draw()
+
+    def zoom_wheel(self, event):
+        """Zoom toward the mouse pointer on Windows."""
+        if event.delta:
+            self.cancel_drag()
+            self.zoom_view(1.25 if event.delta > 0 else 0.8, event.x, event.y)
+            self.hover_info(event)
+        return 'break'
+
+    def restore_view(self):
+        """Fit the full detector without altering calculated data or intensity scale."""
+        self.zoom, self.view_center = 1.0, (0.5, 0.5)
+        self.rectangle_mode.set(False)
+        self.change_drag_mode()
+        self.draw()
+
+    def cancel_drag(self):
+        """Discard an unfinished pan or rectangle without changing the view."""
+        self.pan_anchor, self.drag_start, self.drag_moved = None, None, False
+        self.canvas.delete('zoom_rectangle')
+
+    def change_drag_mode(self):
+        """Switch between default left-drag pan and one-shot rectangle zoom."""
+        self.cancel_drag()
+        self.canvas.configure(cursor='crosshair' if self.rectangle_mode.get() else '')
+        if hasattr(self, 'zoom_info'):
+            self.zoom_info.set('{:.2f}x | Wheel: zoom at cursor; left-drag: {}'.format(self.zoom, 'select rectangle' if self.rectangle_mode.get() else 'pan'))
+
+    def start_drag(self, event):
+        """Begin left-button navigation; simple clicks still inspect spots."""
+        self.cancel_drag()
+        if self.result is None:
+            return
+        scale, x0, y0, (left, top, right, bottom) = self.view_transform()
+        if left <= event.x <= right and top <= event.y <= bottom:
+            self.drag_start = (event.x, event.y)
+            if not self.rectangle_mode.get():
+                self.start_pan(event)
+
+    def drag_view(self, event):
+        """Preview a selection rectangle or pan after a small drag threshold."""
+        if self.drag_start is None:
+            return
+        x, y = self.drag_start
+        if math.hypot(event.x - x, event.y - y) < 4 and not self.drag_moved:
+            return
+        self.drag_moved = True
+        if self.rectangle_mode.get():
+            scale, x0, y0, (left, top, right, bottom) = self.view_transform()
+            self.canvas.delete('zoom_rectangle')
+            self.canvas.create_rectangle(x, y, max(left, min(right, event.x)), max(top, min(bottom, event.y)), outline='#ffffff', dash=(4, 3), width=2, tags='zoom_rectangle')
+        else:
+            self.pan_view(event)
+        self.hover_info(event)
+
+    def end_drag(self, event):
+        """Fit a selected rectangle, or inspect a spot only when no drag occurred."""
+        if self.drag_start is None:
+            return
+        x, y = self.drag_start
+        moved = self.drag_moved or math.hypot(event.x - x, event.y - y) >= 4
+        if self.rectangle_mode.get() and moved:
+            scale, x0, y0, (left, top, right, bottom) = self.view_transform()
+            ex, ey = max(left, min(right, event.x)), max(top, min(bottom, event.y))
+            if abs(ex - x) >= 4 and abs(ey - y) >= 4:
+                d = self.result['detector']
+                self.view_center = (max(0, min(1, ((x + ex)/2 - x0)/(scale*d['columns']))),
+                                    max(0, min(1, ((y + ey)/2 - y0)/(scale*d['rows']))))
+                self.zoom = min(32, self.zoom*min((right - left)/abs(ex - x), (bottom - top)/abs(ey - y)))
+                self.rectangle_mode.set(False)
+                self.change_drag_mode()
+                self.draw()
+        elif not moved and not self.rectangle_mode.get():
+            self.spot_info(event)
+        self.cancel_drag()
+
+    def start_pan(self, event):
+        """Start left-button panning inside the plotting viewport."""
+        if self.result is None or self.zoom == 1:
+            return
+        scale, x0, y0, (left, top, right, bottom) = self.view_transform()
+        if left <= event.x <= right and top <= event.y <= bottom:
+            self.pan_anchor = (event.x, event.y, self.view_center, scale)
+
+    def pan_view(self, event):
+        """Translate the zoomed detector while keeping legend and labels fixed."""
+        if self.pan_anchor is None:
+            return
+        x, y, center, scale = self.pan_anchor
+        d = self.result['detector']
+        self.view_center = (max(0, min(1, center[0] - (event.x - x)/(scale*d['columns']))),
+                            max(0, min(1, center[1] - (event.y - y)/(scale*d['rows']))))
+        self.draw()
+
+    def update_scan_inputs(self, *args):
+        """Explain scan inputs and disable them for orientation-averaged powder."""
+        powder = self.vars['mode'].get() == 'Powder rings'
+        for widget in self.scan_fields:
+            widget.configure(state='disabled' if powder else 'normal')
+        text = 'Powder rings average over orientations; rotation scan settings do not apply.' if powder else (
+            'Rotate about +Z; positive omega is CCW viewed from +Z toward the origin.\n'
+            'Example: 0 to 2, width 0.25 gives 8 frames: [0,0.25), ... [1.75,2).\n'
+            'Width is angular exposure, not calculation accuracy. Each ideal reflection belongs to one frame; no rocking width.\n'
+            'Press Calculate after changing these inputs.')
+        self.scan_help.configure(text=text)
+
+    def update_scan_view(self):
+        """Show the calculated scan interval and enable only meaningful view controls."""
+        grain_scan = self.result is not None and bool(self.result['matrices'])
+        self.integrated_box.configure(state='normal' if grain_scan else 'disabled')
+        self.frame_box.configure(state='normal' if grain_scan and not self.integrated.get() else 'disabled')
+        if not grain_scan:
+            text = 'Calculate a grain-mode scan to browse frames. Powder rings have no individual frames.'
+        else:
+            settings = self.result['settings']
+            start, end, step = [float(settings[key]) for key in ('start', 'end', 'step')]
+            count = int(math.ceil((end - start)/step))
+            if self.integrated.get():
+                text = 'All {} frames over [{:g}, {:g}) deg are overlaid. Uncheck All frames to inspect one exposure.'.format(count, start, end)
+            else:
+                try:
+                    frame = self.frame.get()
+                except tk.TclError:
+                    frame = 0
+                frame = max(0, min(count - 1, frame))
+                self.frame.set(frame)
+                lower = start + frame*step
+                text = 'Frame {} of 0-{}: omega [{:g}, {:g}) deg (end excluded). Use arrows or type a frame and press Enter.'.format(frame, count - 1, lower, min(lower + step, end))
+        self.view_help.configure(text=text)
+
+    def section(self, title):
+        """Add a compact section heading."""
+        ttk.Label(self.form, text=title, font=('Segoe UI', 9, 'bold')).grid(row=self.row, column=0, columnspan=3, sticky='w', pady=(10, 4))
+        self.row += 1
+
+    def field(self, title, key, choices=None, button=None):
+        """Add one labelled entry or selection field."""
+        ttk.Label(self.form, text=title).grid(row=self.row, column=0, sticky='w', pady=3)
+        if choices is None:
+            widget = ttk.Entry(self.form, textvariable=self.vars[key], width=16)
+        else:
+            widget = ttk.Combobox(self.form, textvariable=self.vars[key], values=choices, state='readonly', width=20)
+        widget.grid(row=self.row, column=1, columnspan=1 if button else 2, sticky='ew', padx=4)
+        if button:
+            ttk.Button(self.form, text=button[0], command=button[1], width=7).grid(row=self.row, column=2)
+        self.row += 1
+        return widget
+
+    def snapshot(self):
+        """Capture user inputs without sharing Tk objects with worker threads."""
+        return dict((key, variable.get()) for key, variable in self.vars.items())
+
+    def browse_cif(self):
+        """Select a CIF and populate its structure-block selector."""
+        path = filedialog.askopenfilename(filetypes=[('Crystal files', '*.cif'), ('All files', '*.*')])
+        if path:
+            self.use_cif(path)
+
+    def select_example(self, event=None):
+        """Select a bundled/local example without changing its crystallographic data."""
+        self.use_cif(os.path.join(ROOT, 'examples', self.example_name.get()))
+
+    def use_cif(self, path):
+        """Validate a selected CIF block list and update the active input atomically."""
+        try:
+            names = cif_blocks(path)
+            if not names:
+                raise ValueError('No unit-cell blocks found.')
+            self.vars['cif'].set(path)
+            self.blocks.configure(values=names)
+            self.vars['block'].set(names[0])
+            local = os.path.dirname(os.path.abspath(path)) == os.path.join(ROOT, 'examples')
+            self.example_name.set(os.path.basename(path) if local else '')
+        except Exception as error:
+            self.example_name.set('')
+            messagebox.showerror('CIF error', str(error))
+
+    def browse_orientations(self):
+        """Select an orientation file; contents are validated during calculation."""
+        path = filedialog.askopenfilename(filetypes=[('Orientation files', '*.csv *.txt'), ('All files', '*.*')])
+        if path:
+            self.vars['orientation_file'].set(path)
+            self.vars['mode'].set('Imported orientations')
+
+    def apply_preset(self, event=None):
+        """Set exact image dimensions and pitches; centre the beam on the image."""
+        preset = self.presets.get(self.vars['preset'].get())
+        if preset:
+            for key in ('columns', 'rows', 'pixel_y', 'pixel_z'):
+                self.vars[key].set(str(preset[key]))
+            self.vars['center_col'].set(str((preset['columns'] - 1)/2))
+            self.vars['center_row'].set(str((preset['rows'] - 1)/2))
+
+    def run(self):
+        """Start a cancellable calculation and preserve its input snapshot."""
+        if self.busy:
+            return
+        settings = self.snapshot()
+        self.busy = True
+        self.cancel_event.clear()
+        self.run_button.configure(state='disabled')
+        self.status.set('Calculating reflections and diffraction events...')
+        self.worker = threading.Thread(target=self.work, args=(settings,), daemon=True)
+        self.worker.start()
+
+    def work(self, settings):
+        """Run scientific calculations off the UI thread; report errors via queue."""
+        try:
+            progress = lambda done, total: self.messages.put(('progress', '{} / {} grains'.format(done, total)))
+            self.messages.put(('result', calculate(settings, self.cancel_event, progress)))
+        except Exception as error:
+            self.messages.put(('error', str(error)))
+
+    def poll(self):
+        """Consume worker notifications on the Tk main thread."""
+        try:
+            while True:
+                kind, value = self.messages.get_nowait()
+                if kind == 'progress':
+                    self.status.set(value)
+                else:
+                    self.busy = False
+                    self.run_button.configure(state='normal')
+                    if kind == 'error':
+                        self.status.set(value)
+                        if value != 'Calculation cancelled.':
+                            messagebox.showerror('Calculation failed', value)
+                    else:
+                        self.show_result(value)
+        except queue.Empty:
+            pass
+        self.root.after(100, self.poll)
+
+    def show_result(self, result):
+        """Display a completed calculation and refill the powder-line table."""
+        self.result, self.selected_line = result, None
+        self.zoom, self.view_center, self.pan_anchor = 1.0, (0.5, 0.5), None
+        self.rectangle_mode.set(False)
+        self.change_drag_mode()
+        self.table.delete(*self.table.get_children())
+        for i, line in enumerate(result['lines']):
+            self.table.insert('', 'end', iid=str(i), values=(line['index'], str(line['hkl']), '{:.5f}'.format(line['d']), '{:.5f}'.format(1/line['d']), '{:.4f}'.format(line['two_theta']),
+                              line['multiplicity'], '{:.3g}'.format(line['intensity']), '{:.3f}'.format(line['relative'])))
+        settings = result['settings']
+        nframes = 1 if not result['matrices'] else int(math.ceil((float(settings['end']) - float(settings['start']))/float(settings['step'])))
+        self.frame.set(0)
+        self.frame_box.configure(to=nframes - 1)
+        self.info.configure(text='{} | {} | wavelength {:.5f} Å | {} | detector pixel view'.format(settings['block'], result['spacegroup'], result['wavelength'], settings['mode']))
+        self.draw()
+
+    def visible_data(self):
+        """Get thresholded display data; full unthresholded results remain exportable."""
+        if self.result is None:
+            return [], []
+        minimum = float(self.result['settings']['minimum'])
+        lines = [line for line in self.result['lines'] if line['relative'] >= minimum]
+        maximum = self.result['intensity_max']
+        try:
+            frame = self.frame.get()
+        except tk.TclError:
+            frame = 0
+        events = [event for event in self.result['events'] if 100*event['intensity']/maximum >= minimum and (self.integrated.get() or event['frame'] == frame)]
+        return lines, events
+
+    def draw(self):
+        """Render schematic rings/spots; cap display only, never exported results."""
+        self.update_scan_view()
+        self.canvas.delete('all')
+        self.drawn_spots = []
+        self.hover_items = {}
+        if self.result is None:
+            self.canvas.create_text(30, 40, anchor='nw', fill='#b9c9dc', text='Load a crystal, define the detector, then Calculate.', font=('Segoe UI', 13))
+            return
+        d = self.result['detector']
+        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        scale, x0, y0, (left, top, right, bottom) = self.view_transform()
+        self.zoom_info.set('{:.2f}x | Wheel: zoom at cursor; left-drag: {}'.format(self.zoom, 'select rectangle' if self.rectangle_mode.get() else 'pan'))
+        x1, y1 = x0 + scale*d['columns'], y0 + scale*d['rows']
+        cx, cy = x0 + (d['cx'] + 0.5)*scale, y0 + (d['cy'] + 0.5)*scale
+        lines, events = self.visible_data()
+        maximum = self.result['intensity_max']
+        if self.overlay.get() or not self.result['matrices']:
+            for line in lines:
+                for u0, v0, u1, v1, color in ring_segments(line, d, self.result['polarization'], maximum, bool(self.result['matrices'])):
+                    coordinates = (x0 + (u0 + 0.5)*scale, y0 + (v0 + 0.5)*scale, x0 + (u1 + 0.5)*scale, y0 + (v1 + 0.5)*scale)
+                    item = self.canvas.create_line(*coordinates, fill=color, width=3 if line is self.selected_line else 1)
+                    self.hover_items[item] = ('ring', coordinates, line)
+        limit = 20000
+        stride = max(1, int(math.ceil(len(events)/limit)))
+        for event in events[::stride]:
+            x, y = x0 + (event['col'] + 0.5)*scale, y0 + (event['row'] + 0.5)*scale
+            color = intensity_color(event['intensity']/maximum)
+            item = self.canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=color, outline='')
+            self.hover_items[item] = ('spot', (x, y, x, y), event)
+            if left <= x <= right and top <= y <= bottom:
+                self.drawn_spots.append((x, y, event))
+        # Mask arcs outside the detector's active rectangle (module gaps not modelled).
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            self.canvas.create_line(cx - 6, cy, cx + 6, cy, fill='#f57676')
+            self.canvas.create_line(cx, cy - 6, cx, cy + 6, fill='#f57676')
+        clip_left, clip_top, clip_right, clip_bottom = max(left, x0), max(top, y0), min(right, x1), min(bottom, y1)
+        for box in [(0, 0, width, clip_top), (0, clip_bottom, width, height), (0, clip_top, clip_left, clip_bottom), (clip_right, clip_top, width, clip_bottom)]:
+            self.canvas.create_rectangle(*box, fill='#101c2c', outline='')
+        # Draw the visible plot frame last so clipping masks cannot cover its edges.
+        self.canvas.create_rectangle(clip_left, clip_top, clip_right, clip_bottom, outline='#9bb0c9', tags='plot_border')
+        title = '+Z up | +Y right | view along incident beam (+X)'
+        if any(abs(value) > 1e-12 for value in d['tilts']):
+            title = 'Detector pixel view | tilts X={:g}°, Y={:g}°, Z={:g}°'.format(*d['tilts'])
+        self.canvas.create_text(left, top - 16, anchor='w', fill='#b9c9dc', text=title)
+        self.canvas.create_text(left, bottom + 16, anchor='w', fill='#b9c9dc', text='{} x {} pixels | {:.2f} x {:.2f} mm'.format(d['columns'], d['rows'], d['columns']*d['py'], d['rows']*d['pz']))
+        bar_x, bar_y, bar_height = width - 80, 60, max(60, height - 130)
+        for index in range(100):
+            self.canvas.create_rectangle(bar_x, bar_y + index*bar_height/100, bar_x + 16, bar_y + (index + 1)*bar_height/100,
+                                         fill=intensity_color(1 - (index + 0.5)/100), outline='', tags='intensity_scale')
+        for percent in (0, 25, 50, 75, 100):
+            self.canvas.create_text(bar_x + 22, bar_y + (1 - percent/100)*bar_height, anchor='w', fill='#b9c9dc', text=str(percent))
+        self.canvas.create_text(bar_x, bar_y - 25, fill='#b9c9dc', text='Intensity\n[%]', tags='intensity_scale')
+        text = '{} powder lines; {} grains; {} detected events; {} in current view.'.format(len(lines), len(self.result['matrices']), len(self.result['events']), len(events))
+        if stride > 1:
+            text += ' Preview decimated 1:{}; CSV contains all events.'.format(stride)
+        if self.result['matrices'] and not self.integrated.get():
+            settings = self.result['settings']
+            try:
+                start = float(settings['start']) + self.frame.get()*float(settings['step'])
+                text += ' Omega [{:.4g}, {:.4g}) deg.'.format(start, min(start + float(settings['step']), float(settings['end'])))
+            except tk.TclError:
+                pass
+        self.status.set(text)
+        if self.hover_xy is not None:
+            self.update_hover(*self.hover_xy)
+
+    def clear_hover(self, event=None):
+        """Clear the readout when the cursor leaves the plot canvas."""
+        self.hover_xy = None
+        self.cursor_info.set('Move over the detector to inspect pixel coordinates and relative signal intensity.')
+
+    def hover_info(self, event):
+        """Track cursor motion without recomputing diffraction or repainting the plot."""
+        self.hover_xy = (event.x, event.y)
+        self.update_hover(event.x, event.y)
+
+    def update_hover(self, x, y):
+        """Read zero-based detector coordinates and the nearest rendered signal within 6 screen pixels.
+        Args:
+            x, y: Cursor coordinates on the canvas, respecting zoom and pan.
+        Returns:
+            None. Updates the live readout; intensities are schematic feature weights,
+            not rasterized pixel counts. Grey guide rings have no spot intensity.
+        """
+        if self.result is None:
+            self.cursor_info.set('Calculate a diffraction pattern to inspect the detector.')
+            return
+        scale, x0, y0, (left, top, right, bottom) = self.view_transform()
+        d = self.result['detector']
+        col, row = (x - x0)/scale - 0.5, (y - y0)/scale - 0.5
+        if not (left <= x <= right and top <= y <= bottom and -0.5 <= col < d['columns'] - 0.5 and -0.5 <= row < d['rows'] - 0.5):
+            self.cursor_info.set('Outside detector — pixel coordinates and signal intensity unavailable.')
+            return
+        text = 'Pixel (col, row) = ({:.2f}, {:.2f})'.format(col, row)
+        nearest = {}
+        # Tk searches its spatial display list; only nearby rendered items need Python checks.
+        for item in self.canvas.find_overlapping(x - 6, y - 6, x + 6, y + 6):
+            feature = self.hover_items.get(item)
+            if feature is None:
+                continue
+            kind, (ax, ay, bx, by), record = feature
+            dx, dy = bx - ax, by - ay
+            length2 = dx*dx + dy*dy
+            fraction = max(0, min(1, ((x - ax)*dx + (y - ay)*dy)/length2)) if length2 else 0
+            distance2 = (x - ax - fraction*dx)**2 + (y - ay - fraction*dy)**2
+            if distance2 <= 36 and (kind not in nearest or distance2 < nearest[kind][0]):
+                nearest[kind] = (distance2, record)
+        if 'spot' in nearest:
+            spot = nearest['spot'][1]
+            intensity = spot['intensity']
+            text += ' | Nearest spot I = {:.5g} a.u. ({:.2f}%) | Grain {} HKL {}'.format(intensity, 100*intensity/self.result['intensity_max'], spot['grain'], spot['hkl'])
+        elif 'ring' in nearest and not self.result['matrices']:
+            line = nearest['ring'][1]
+            point = pixel_lab(d, col, row)
+            azimuth = math.atan2(point[2], point[1])
+            intensity = line['sum_f2']*line['lorentz']*polarization_factor(line['two_theta'], azimuth, self.result['polarization'])
+            text += ' | Nearest ring I = {:.5g} a.u. ({:.2f}%)'.format(intensity, 100*intensity/self.result['intensity_max'])
+        else:
+            text += ' | I = 0 (no nearby rendered signal)'
+        if 'ring' in nearest:
+            line = nearest['ring'][1]
+            text += ' | Ring {} HKL {}'.format(line['index'], line['hkl'])
+            if self.result['matrices']:
+                text += ' (guide)'
+        self.cursor_info.set(text)
+
+    def highlight(self, event=None):
+        """Highlight the ring selected in the reflection table."""
+        selection = self.table.selection()
+        self.selected_line = self.result['lines'][int(selection[0])] if selection and self.result else None
+        self.draw()
+
+    def spot_info(self, event):
+        """Report the nearest rendered spot's grain, HKL and diffraction angle."""
+        if self.drawn_spots:
+            x, y, spot = min(self.drawn_spots, key=lambda item: (item[0] - event.x)**2 + (item[1] - event.y)**2)
+            if math.hypot(x - event.x, y - event.y) < 12:
+                self.status.set('Grain {} | HKL {} | omega {:.5f} deg | 2theta {:.5f} deg | I={:.4g} a.u. | |F|²={:.4g}, P={:.4g}, L={:.4g}'.format(
+                    spot['grain'], spot['hkl'], spot['omega'], spot['two_theta'], spot['intensity'], spot['f2'], spot['polarization'], spot['lorentz']))
+
+    def save_settings(self):
+        """Save editable inputs, not a potentially stale calculation result."""
+        path = filedialog.asksaveasfilename(defaultextension='.json', filetypes=[('Settings', '*.json')])
+        if path:
+            try:
+                with open(path, 'w', encoding='utf-8') as stream:
+                    json.dump(settings_for_disk(self.snapshot()), stream, indent=2)
+            except Exception as error:
+                messagebox.showerror('Save failed', str(error))
+
+    def load_settings(self):
+        """Load input settings; user explicitly recalculates afterwards."""
+        path = filedialog.askopenfilename(filetypes=[('Settings', '*.json')])
+        if path:
+            try:
+                with open(path, encoding='utf-8') as stream:
+                    settings = json.load(stream)
+                if not isinstance(settings, dict):
+                    raise ValueError('Expected a settings dictionary.')
+                settings = settings_from_disk(settings)
+                # Files saved before tilt inputs existed describe an untilted detector.
+                for key in ('tilt_x', 'tilt_y', 'tilt_z'):
+                    settings.setdefault(key, '0')
+                for key in DEFAULTS:
+                    if key in settings:
+                        self.vars[key].set(str(settings[key]))
+                names = cif_blocks(self.vars['cif'].get())
+                self.blocks.configure(values=names)
+                path = os.path.abspath(self.vars['cif'].get())
+                self.example_name.set(os.path.basename(path) if os.path.dirname(path) == os.path.join(ROOT, 'examples') else '')
+                self.status.set('Settings loaded. Press Calculate to update the displayed result.')
+            except Exception as error:
+                messagebox.showerror('Load failed', str(error))
+
+    def export_csv(self):
+        """Export all calculated signed reflections, powder lines, spots and provenance."""
+        if not self.result:
+            return
+        path = filedialog.asksaveasfilename(defaultextension='.csv', filetypes=[('CSV prefix', '*.csv')])
+        if not path:
+            return
+        base = os.path.splitext(path)[0]
+        targets = [base + suffix for suffix in ('_reflections.csv', '_rings.csv', '_spots.csv', '_settings.json')]
+        if any(os.path.exists(target) for target in targets) and not messagebox.askyesno('Overwrite exports?', 'One or more output files already exist. Replace them?'):
+            return
+        try:
+            with open(targets[0], 'w', newline='', encoding='utf-8') as stream:
+                writer = csv.writer(stream)
+                writer.writerow(['h', 'k', 'l', 'd_A', 'inv_d_A_inverse', 'two_theta_deg', 'F_squared'])
+                for record in self.result['reflections']:
+                    writer.writerow(list(record['hkl']) + [record['d'], 1/record['d'], record['two_theta'], record['f2']])
+            with open(targets[1], 'w', newline='', encoding='utf-8') as stream:
+                writer = csv.writer(stream)
+                writer.writerow(['index', 'hkl_representative', 'all_hkls', 'multiplicities', 'd_A', 'inv_d_A_inverse', 'two_theta_deg', 'sum_F_squared', 'polarization_mean', 'lorentz', 'intensity_au', 'relative_percent'])
+                for line in self.result['lines']:
+                    writer.writerow([line['index'], line['hkl'], ';'.join(str(hkl) for hkl in line['hkls']), line['multiplicity'], line['d'], 1/line['d'], line['two_theta'], line['sum_f2'], line['polarization'], line['lorentz'], line['intensity'], line['relative']])
+            with open(targets[2], 'w', newline='', encoding='utf-8') as stream:
+                writer = csv.writer(stream)
+                writer.writerow(['grain_id', 'h', 'k', 'l', 'omega_deg', 'frame', 'column', 'row', 'F_squared', 'two_theta_deg', 'azimuth_rad', 'polarization', 'lorentz', 'intensity_au'])
+                for spot in self.result['events']:
+                    writer.writerow([spot['grain']] + list(spot['hkl']) + [spot[key] for key in ('omega', 'frame', 'col', 'row', 'f2', 'two_theta', 'azimuth', 'polarization', 'lorentz', 'intensity')])
+            with open(targets[3], 'w', encoding='utf-8') as stream:
+                json.dump(settings_for_disk(self.result['settings']), stream, indent=2)
+            self.status.set('Saved {}_reflections.csv, _rings.csv, _spots.csv and _settings.json.'.format(base))
+        except Exception as error:
+            messagebox.showerror('Export failed', str(error))
+
+    def export_orientations(self):
+        """Save the exact matrices used by the displayed calculation."""
+        if not self.result or not self.result['matrices']:
+            messagebox.showinfo('Orientations', 'Calculate a random or imported grain sample first.')
+            return
+        path = filedialog.asksaveasfilename(defaultextension='.csv', filetypes=[('Orientations', '*.csv')])
+        if path:
+            try:
+                save_orientations(path, self.result['matrices'])
+            except Exception as error:
+                messagebox.showerror('Export failed', str(error))
+
+    def export_png(self):
+        """Save the current plot canvas at 300 DPI, preserving its displayed view."""
+        if not self.result:
+            return
+        try:
+            self.root.update_idletasks()
+            # Capture the view before opening the dialog; no desktop screenshot is used.
+            image = canvas_snapshot(self.canvas, dpi=300)
+            path = filedialog.asksaveasfilename(defaultextension='.png', filetypes=[('PNG snapshot', '*.png')])
+            if not path:
+                return
+            image.save(path, format='PNG', dpi=(300, 300))
+            self.status.set('Saved PNG snapshot: {} | {} x {} pixels | 300 dpi.'.format(path, image.width, image.height))
+        except Exception as error:
+            messagebox.showerror('Export failed', str(error))
+
+    def help(self):
+        """Explain coordinate, orientation, exposure and intensity conventions."""
+        messagebox.showinfo('Conventions & scope',
+            'X: incident beam; Z: vertical up; Y: outward, right-handed.\n'
+            '+omega: counter-clockwise viewed from +Z toward the origin.\n'
+            'U maps crystal Cartesian column vectors into the sample at omega=0.\n'
+            'Crystal basis: a along x; b in xy; c has positive z; B=A^(-T), no 2*pi.\n'
+            'Orientation CSV: U11,U12,U13,U21,U22,U23,U31,U32,U33.\n'
+            'Zero tilt: columns +Y, rows -Z; zero-based pixel centres.\n'
+            'Detector tilts: right-handed fixed lab X then Y then Z (Rz Ry Rx).\n'
+            'Pivot: direct-beam point (distance,0,0); distance is along +X.\n\n'
+            'All grains have equal weights and origin positions. Random rotations are uniform.\n'
+            'Scan intervals are [start,end); step is frame exposure width. Exact Bragg events\n'
+            'are assigned to frames; finite mosaicity/rocking width is not modelled.\n'
+            'Intensity = |F|^2 x P x L; powder lines include multiplicity.\n'
+            'Polarization: +1 horizontal, -1 vertical, 0 unpolarized; blank disables P.\n'
+            'Powder table uses azimuth-averaged P; ring colours vary with azimuth.\n'
+            'L: powder cos(theta)/sin(2theta)^2; rotation 1/|sin(2theta)cos(azimuth)|.\n'
+            'Azimuth is measured from +Y toward +Z. Tangent rotation events are singular.\n'
+            'Colour scale is linear: 100% = full-scan maximum spot intensity, or\n'
+            'maximum full-ring intensity in powder mode; fixed across frames.\n'
+            'CIF occupancies and ADPs are included. No anomalous scattering,\n'
+            'absorption, texture weights, module gaps or detector response.\n'
+            'Near absorption edges relative intensities may be inaccurate.\n'
+            'Settings edits take effect only on Calculate. CSV exports the full last result.')
+
+    def close(self):
+        """Cancel pending work and close the window."""
+        self.cancel_event.set()
+        self.root.destroy()
+
+
+def smoke_test(report_path):
+    """Exercise bundled Gemmi, resources and Tk, writing a diagnostic JSON report."""
+    report = dict(ok=False)
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        application = Application(root)
+        if application.crystal_values[-1].get() != '229':
+            raise RuntimeError('Initial crystal metadata mismatch.')
+        application.use_cif(os.path.join(ROOT, 'examples', 'Al_fcc.cif'))
+        application.update_crystal_info()
+        if application.crystal_values[-1].get() != '225':
+            raise RuntimeError('Selected crystal metadata mismatch.')
+        application.vars['block'].set('missing')
+        application.update_crystal_info()
+        if 'unavailable' not in application.crystal_info.get() or application.crystal_values[-1].get() != '—':
+            raise RuntimeError('Invalid block retained stale crystal metadata.')
+        application.use_cif(DEFAULTS['cif'])
+        if any(str(widget.cget('state')) != 'disabled' for widget in application.scan_fields):
+            raise RuntimeError('Powder scan inputs should be disabled.')
+        application.vars['mode'].set('Random grains')
+        if any(str(widget.cget('state')) != 'normal' for widget in application.scan_fields):
+            raise RuntimeError('Grain scan inputs should be enabled.')
+        # Exercise every detector preset, including effective imaging-camera pitches.
+        for name, preset in application.presets.items():
+            application.vars['preset'].set(name)
+            application.apply_preset()
+            current = application.snapshot()
+            if float(current['pixel_y']) != preset['pixel_y'] or float(current['pixel_z']) != preset['pixel_z']:
+                raise RuntimeError('Preset pitch mismatch: {}.'.format(name))
+            if float(current['center_col']) != (preset['columns'] - 1)/2 or float(current['center_row']) != (preset['rows'] - 1)/2:
+                raise RuntimeError('Preset centre mismatch: {}.'.format(name))
+        settings = dict(DEFAULTS)
+        settings.update(mode='Random grains', number='20')
+        result = calculate(settings)
+        if not result['lines'] or not result['events']:
+            raise RuntimeError('Smoke calculation produced no diffraction.')
+        application.show_result(result)
+        root.update()
+        if str(application.table.item('0', 'values')[0]) != '0' or not application.canvas.find_withtag('intensity_scale'):
+            raise RuntimeError('Missing zero-based table index or intensity scale.')
+        if abs(float(application.table.item('0', 'values')[3]) - 1/result['lines'][0]['d']) > 0.0000051:
+            raise RuntimeError('Reciprocal-spacing column mismatch.')
+        if len(application.workspace_panes.panes()) != 2 or len(application.plot_panes.panes()) != 2:
+            raise RuntimeError('Missing adjustable workspace/plot panes.')
+        application.update_hover(0, 0)
+        if 'Outside detector' not in application.cursor_info.get():
+            raise RuntimeError('Outside-detector hover readout mismatch.')
+        application.clear_hover()
+        scale_max = application.result['intensity_max']
+        application.canvas.configure(width=800, height=440)
+        root.update_idletasks()
+        # Verify that zoom preserves the detector point under its screen anchor.
+        initial = application.view_transform()
+        scale, x0, y0, (left, top, right, bottom) = initial
+        px, py = left + 0.6*(right - left), top + 0.4*(bottom - top)
+        original_point = ((px - x0)/scale, (py - y0)/scale)
+        application.zoom_view(2, px, py)
+        scale, x0, y0, viewport = application.view_transform()
+        zoomed_point = ((px - x0)/scale, (py - y0)/scale)
+        if application.zoom != 2 or max(abs(a - b) for a, b in zip(original_point, zoomed_point)) > 1e-8:
+            raise RuntimeError('Zoom moved the detector point under its anchor.')
+        application.zoom_view(0.8)
+        if abs(application.zoom - 1.6) > 1e-12:
+            raise RuntimeError('Zoom out failed.')
+        mouse = type('Mouse', (), dict(x=px, y=py))()
+        application.start_pan(mouse)
+        old_center = application.view_center
+        mouse.x += 0.1*(right - left)
+        application.pan_view(mouse)
+        if application.view_center == old_center:
+            raise RuntimeError('Panning did not change the view centre.')
+        application.restore_view()
+        if application.view_transform() != initial or application.result['intensity_max'] != scale_max:
+            raise RuntimeError('Restore view changed detector fit or intensity normalization.')
+        if str(application.frame_box.cget('state')) != 'disabled':
+            raise RuntimeError('Integrated view must disable frame selection.')
+        application.integrated.set(False)
+        application.frame.set(4)
+        application.draw()
+        if str(application.frame_box.cget('state')) != 'normal' or '[1, 1.25)' not in application.view_help.cget('text'):
+            raise RuntimeError('Individual frame interval/control mismatch.')
+        if application.result['intensity_max'] != scale_max:
+            raise RuntimeError('Intensity normalization changed between frames.')
+        # Map invisibly for real canvas dimensions, then exercise the bundled PNG encoder/fonts.
+        root.attributes('-alpha', 0)
+        root.deiconify()
+        root.update()
+        tilted = calculate(dict(settings, tilt_x='12', tilt_y='-18', tilt_z='23'))
+        application.show_result(tilted)
+        root.update()
+        if application.result['detector']['tilts'] != (12, -18, 23):
+            raise RuntimeError('Tilted detector workflow mismatch.')
+        snapshot = canvas_snapshot(application.canvas)
+        with tempfile.TemporaryDirectory() as folder:
+            from PIL import Image
+            path = os.path.join(folder, 'snapshot.png')
+            snapshot.save(path, dpi=(300, 300))
+            with Image.open(path) as saved:
+                if abs(saved.info['dpi'][0] - 300) > 0.01 or saved.size != snapshot.size:
+                    raise RuntimeError('PNG snapshot size/DPI mismatch.')
+        report.update(ok=True, lines=len(result['lines']), spots=len(result['events']), presets=len(application.presets), examples=len(example_cifs()), tk=root.tk.call('info', 'patchlevel'))
+    except Exception:
+        report['error'] = traceback.format_exc()
+    finally:
+        if root is not None:
+            root.destroy()
+        with open(report_path, 'w', encoding='utf-8') as stream:
+            json.dump(report, stream, indent=2)
+    return 0 if report['ok'] else 1
+
+
+def main():
+    """Launch the UI or perform an explicit bundled-runtime smoke test."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--smoke-test', metavar='REPORT_JSON')
+    args = parser.parse_args()
+    if args.smoke_test:
+        return smoke_test(args.smoke_test)
+    root = tk.Tk()
+    Application(root)
+    root.mainloop()
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

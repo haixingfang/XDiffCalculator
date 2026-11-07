@@ -1,0 +1,47 @@
+{
+  "PILATUS3 R 1M (Si)": {
+    "columns": 981, "rows": 1043, "pixel_y": 172, "pixel_z": 172,
+    "source": "https://dectriswebsite-live-eac9c2f266324cfaa2c-57347c9.divio-media.com/filer_public/ac/f9/acf939f9-fdee-46e3-80b5-1be9582ab0fc/technicalspecification-pilatus3-r-1m-v120.pdf",
+    "note": "Full image geometry only; module gaps and quantum efficiency are NOT simulated."
+  },
+  "EIGER2 1M (Si)": {
+    "columns": 1028, "rows": 1062, "pixel_y": 75, "pixel_z": 75,
+    "source": "https://github.com/silx-kit/pyFAI/blob/main/src/pyFAI/detectors/_dectris.py",
+    "note": "Eiger2_1M geometry; not CdTe. Module/chip gaps and detector response are NOT simulated."
+  },
+  "EIGER2 X CdTe 4M": {
+    "columns": 2068, "rows": 2162, "pixel_y": 75, "pixel_z": 75,
+    "source": "https://media.dectris.com/TechnicalSpecifications_EIGER2_X_CdTe_4M.pdf",
+    "note": "Full image dimensions including gap coordinates; module/chip gaps and detector response are NOT simulated."
+  },
+  "EIGER2 X CdTe 16M": {
+    "columns": 4148, "rows": 4362, "pixel_y": 75, "pixel_z": 75,
+    "source": "https://media.dectris.com/TechnicalSpecifications_EIGER2_X_CdTe_16M.pdf",
+    "note": "Full image dimensions including gap coordinates; module/chip gaps and detector response are NOT simulated."
+  },
+  "marana_20x_0.55um": {
+    "columns": 2048, "rows": 2048, "pixel_y": 0.55, "pixel_z": 0.55,
+    "source": "User-specified imaging-camera configuration",
+    "note": "Effective pixel pitch at the scintillator/detection plane, already accounting for magnification. Optical PSF and scintillator response are not modelled."
+  },
+  "marana_10x_1.1um": {
+    "columns": 2048, "rows": 2048, "pixel_y": 1.1, "pixel_z": 1.1,
+    "source": "User-specified imaging-camera configuration",
+    "note": "Effective pixel pitch at the scintillator/detection plane, already accounting for magnification. Optical PSF and scintillator response are not modelled."
+  },
+  "marana_7.5x_1.47um": {
+    "columns": 2048, "rows": 2048, "pixel_y": 1.47, "pixel_z": 1.47,
+    "source": "User-specified imaging-camera configuration",
+    "note": "Effective pixel pitch at the scintillator/detection plane, already accounting for magnification. Optical PSF and scintillator response are not modelled."
+  },
+  "marana_5x_2.2um": {
+    "columns": 2048, "rows": 2048, "pixel_y": 2.2, "pixel_z": 2.2,
+    "source": "User-specified imaging-camera configuration",
+    "note": "Effective pixel pitch at the scintillator/detection plane, already accounting for magnification. Optical PSF and scintillator response are not modelled."
+  },
+  "Hamamatsu_2x_3.25um": {
+    "columns": 2048, "rows": 2048, "pixel_y": 3.25, "pixel_z": 3.25,
+    "source": "User-specified imaging-camera configuration",
+    "note": "Effective pixel pitch at the scintillator/detection plane, already accounting for magnification. Optical PSF and scintillator response are not modelled."
+  }
+}
