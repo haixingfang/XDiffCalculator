@@ -32,7 +32,9 @@ The screenshot shows the bundled Fe bcc example at 40 keV with an EIGER2 X CdTe 
 
 ## White-beam / Laue simulation
 
-![Laue simulation at fixed omega with energy-coloured diffraction spots](docs/images/laue_gui.png)
+![Laue simulation at fixed omega with diffraction spots coloured by relative weight](docs/images/laue_gui.png)
+
+The screenshot shows the Ni example at a fixed omega of 13°, using a W 120 kV source and a 5–120 keV energy window. **Relative weight** colouring displays the approximate spectral weights, with the colour bar labelled **Weight [%]** and normalized to the strongest displayed harmonic group.
 
 Choose **Polychromatic (Laue)** under Beam mode. Select **Single orientation**, **Random grains**, or **Imported orientations**. **Single EulerZXZ (Bunge)** accepts three angles `phi1, Phi, phi2` in degrees, in three labelled entries. The default is **301.891410°, 5.389322°, 57.994617°**, placing sample Z about **5.39° from [001]** in a cubic IPF-Z plot. All grains remain at the origin.
 
