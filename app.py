@@ -20,12 +20,18 @@ from snapshot import canvas_snapshot
 from diffraction import cif_blocks, crystal_metadata, load_crystal, reflections, powder_lines, simulate_spots, polarization_factor
 from geometry import HC_KEV_ANGSTROM, detector_geometry, maximum_two_theta, pixel_lab, ray_detector_hit, clip_detector_segment
 from orientations import random_orientations, load_orientations, save_orientations
+from orientations import euler_to_matrix, matrix_to_euler
+from laue import laue_reflections, simulate_laue_spots, weight_laue_spots, group_laue_spots
+from spectrum import source_spectrum, evaluate_spectrum, TUBE_VOLTAGES
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-DEFAULTS = dict(cif=os.path.join(ROOT, 'examples', 'Fe_bcc.cif'), block='Fe_bcc', mode='Powder rings',
+DEFAULTS = dict(cif=os.path.join(ROOT, 'examples', 'Ni.cif'), block='Ni', mode='Powder rings',
                 orientation_file='', number='200', seed='200', energy='40', distance='150', polarization='0.95',
                 preset='EIGER2 X CdTe 4M', columns='2068', rows='2162', pixel_y='75', pixel_z='75',
                 center_col='1033.5', center_row='1080.5', tilt_x='0', tilt_y='0', tilt_z='0', max_tth='40', start='0', end='2', step='0.25', minimum='0.1')
+DEFAULTS.update(beam_mode='Monochromatic', energy_min='5', energy_max='120', omega='0', source='W', tube_voltage='120',
+                spectrum_file='', laue_polarization='0', colour='Relative weight', laue_weight='Spectral',
+                single_euler='301.891410,5.389322,57.994617')
 
 
 def example_cifs(directory=None):
@@ -49,6 +55,14 @@ def settings_for_disk(settings):
 def settings_from_disk(settings):
     """Resolve explicitly marked bundled examples without changing external paths."""
     result = dict(settings)
+    if 'single_u' in result:
+        if 'single_euler' not in result:
+            values = [float(value) for value in str(result['single_u']).replace(',', ' ').split()]
+            if len(values) != 9:
+                raise ValueError('Legacy single_u must contain nine matrix elements.')
+            angles = matrix_to_euler([values[0:3], values[3:6], values[6:9]])
+            result['single_euler'] = ','.join('{:.15g}'.format(value) for value in angles)
+        del result['single_u']
     value = result.get('cif', '')
     if isinstance(value, str) and value.startswith('@example/'):
         name = value[len('@example/'):]
@@ -67,6 +81,11 @@ def calculate(settings, cancel=None, progress=None):
     Returns:
         result: Detector, crystal summary, reflections, powder lines and spot events.
     """
+    settings = dict(DEFAULTS, **settings_from_disk(settings))
+    if settings['beam_mode'] == 'Polychromatic (Laue)':
+        return calculate_laue(settings, cancel, progress)
+    if settings['beam_mode'] != 'Monochromatic':
+        raise ValueError('Unknown beam mode.')
     detector = detector_geometry(settings['distance'], settings['columns'], settings['rows'], settings['pixel_y'],
                                  settings['pixel_z'], settings['center_col'], settings['center_row'],
                                  settings.get('tilt_x', 0), settings.get('tilt_y', 0), settings.get('tilt_z', 0))
@@ -88,6 +107,8 @@ def calculate(settings, cancel=None, progress=None):
         matrices = random_orientations(int(settings['number']), int(settings['seed']))
     elif settings['mode'] == 'Imported orientations':
         matrices = load_orientations(settings['orientation_file'])
+    elif settings['mode'] == 'Single orientation':
+        matrices = [single_orientation(settings['single_euler'])]
     elif settings['mode'] != 'Powder rings':
         raise ValueError('Unknown sample mode.')
     if matrices:
@@ -102,6 +123,66 @@ def calculate(settings, cancel=None, progress=None):
     return dict(settings=dict(settings), detector=detector, reflections=records, lines=lines, matrices=matrices, events=events,
                 polarization=polarization, intensity_max=intensity_max,
                 cell=list(structure.cell.parameters), spacegroup=structure.spacegroup.xhm(), wavelength=HC_KEV_ANGSTROM/energy)
+
+
+def single_orientation(text):
+    """Read Bunge phi1/Phi/phi2 in degrees and return crystal-to-sample U."""
+    values = [float(value) for value in text.replace(',', ' ').split()]
+    return euler_to_matrix(values)
+
+
+def calculate_laue(settings, cancel=None, progress=None):
+    """Calculate an origin-centred fixed-omega Laue snapshot with approximate weights."""
+    minimum, low, high, omega, angle = [float(settings[key]) for key in ('minimum', 'energy_min', 'energy_max', 'omega', 'max_tth')]
+    if not all(math.isfinite(v) for v in (minimum, low, high, omega, angle)) or not 0 <= minimum <= 100 or not 0 < low < high or not 0 < angle < 90:
+        raise ValueError('Require 0 < Emin < Emax, finite omega, 0 < max 2theta < 90, and display threshold in [0,100].')
+    if settings['mode'] == 'Powder rings':
+        raise ValueError('Laue mode requires Single orientation, Random grains or Imported orientations; white-beam powder is not implemented.')
+    if settings['mode'] == 'Single orientation':
+        matrices = [single_orientation(settings['single_euler'])]
+    elif settings['mode'] == 'Random grains':
+        matrices = random_orientations(int(settings['number']), int(settings['seed']))
+    elif settings['mode'] == 'Imported orientations':
+        matrices = load_orientations(settings['orientation_file'])
+    else:
+        raise ValueError('Unknown sample mode.')
+    if not matrices:
+        raise ValueError('At least one grain orientation is required.')
+    detector = detector_geometry(settings['distance'], settings['columns'], settings['rows'], settings['pixel_y'], settings['pixel_z'],
+                                 settings['center_col'], settings['center_row'], settings['tilt_x'], settings['tilt_y'], settings['tilt_z'])
+    spectrum = source_spectrum(settings)
+    polar = str(settings['laue_polarization']).strip()
+    polar = None if not polar else float(polar)
+    polarization_factor(0, polarization=polar)
+    if settings['laue_weight'] not in ('Spectral', 'Uniform') or settings['colour'] not in ('Relative weight', 'Energy'):
+        raise ValueError('Unknown Laue weighting or colour mode.')
+    structure = load_crystal(settings['cif'], settings['block'] or None)
+    records = laue_reflections(settings['cif'], settings['block'] or None, high, min(angle, maximum_two_theta(detector)))
+    events = simulate_laue_spots(records, matrices, omega, detector, low, high, angle, cancel, progress)
+    events = weight_laue_spots(events, spectrum, polar)
+    groups = group_laue_spots(events)
+    if settings['laue_weight'] == 'Uniform':
+        for group in groups:
+            group['intensity'] = 1.0
+    maximum = max([g['intensity'] for g in groups] or [0]) or 1.0
+    return dict(settings=dict(settings), detector=detector, reflections=records, lines=[], matrices=matrices, events=events, groups=groups,
+                polarization=polar, intensity_max=maximum, cell=list(structure.cell.parameters), spacegroup=structure.spacegroup.xhm(),
+                wavelength=None, spectrum=spectrum, laue=True)
+
+
+def export_laue(result, base):
+    """Write every Laue contribution and a self-contained spectrum/settings provenance file."""
+    keys = ('grain', 'omega', 'energy_keV', 'wavelength_A', 'd', 'two_theta', 'azimuth', 'col', 'row', 'f2', 'polarization', 'spectral_density', 'spectral_weight')
+    with open(base + '_laue.csv', 'w', newline='', encoding='utf-8') as stream:
+        writer = csv.writer(stream)
+        writer.writerow(['h', 'k', 'l'] + list(keys))
+        for event in result['events']:
+            writer.writerow(list(event['hkl']) + [event[key] for key in keys])
+    with open(base + '_laue_settings.json', 'w', encoding='utf-8') as stream:
+        json.dump(dict(settings=settings_for_disk(result['settings']), spectrum=result['spectrum'], matrices=result['matrices'],
+                       euler_bunge_deg=[matrix_to_euler(matrix) for matrix in result['matrices']],
+                       orientation_convention='Bunge ZXZ degrees; U = Rz(phi1) Rx(Phi) Rz(phi2), crystal to sample',
+                       weight_model='S_E * F_squared * P; no Laue Jacobian, absorption, anomalous scattering or detector response'), stream, indent=2)
 
 
 def intensity_color(fraction):
@@ -204,13 +285,43 @@ class Application:
         for key in ('cif', 'block'):
             self.vars[key].trace_add('write', self.schedule_crystal_info)
         self.update_crystal_info()
-        self.field('Sample mode', 'mode', choices=['Powder rings', 'Random grains', 'Imported orientations'])
+        self.sample_mode = self.field('Sample mode', 'mode', choices=['Powder rings', 'Single orientation', 'Random grains', 'Imported orientations'])
+        ttk.Label(form, text='Single EulerZXZ (Bunge)').grid(row=self.row, column=0, columnspan=3, sticky='w', pady=(5, 0))
+        self.row += 1
+        euler_frame = ttk.Frame(form)
+        euler_frame.grid(row=self.row, column=0, columnspan=3, sticky='ew')
+        self.row += 1
+        self.euler_values = [tk.StringVar(value=value) for value in self.vars['single_euler'].get().split(',')]
+        self.updating_euler = False
+        for index, (label, variable) in enumerate(zip(('phi1 [deg]', 'Phi [deg]', 'phi2 [deg]'), self.euler_values)):
+            euler_frame.columnconfigure(index, weight=1)
+            ttk.Label(euler_frame, text=label).grid(row=0, column=index, sticky='w')
+            ttk.Entry(euler_frame, textvariable=variable, width=10).grid(row=1, column=index, sticky='ew', padx=(0, 4))
+            variable.trace_add('write', self.update_euler_setting)
+        self.vars['single_euler'].trace_add('write', self.update_euler_entries)
+        ttk.Label(form, text='phi1, Phi, phi2 in degrees; crystal → sample.\nDefault: 5.39° from [001] in cubic IPF-Z.', wraplength=330).grid(row=self.row, column=0, columnspan=3, sticky='w')
+        self.row += 1
         self.field('Number of grains', 'number')
         self.field('Random seed', 'seed')
-        self.field('U matrix file', 'orientation_file', button=('Browse', self.browse_orientations))
+        self.field('EulerZXZ file [deg]', 'orientation_file', button=('Browse', self.browse_orientations))
         self.section('BEAM & DETECTOR')
-        self.field('Energy [keV]', 'energy')
-        self.field('Polarization [-1,1]', 'polarization')
+        self.field('Beam mode', 'beam_mode', choices=['Monochromatic', 'Polychromatic (Laue)'])
+        self.energy_field = self.field('Mono energy [keV]', 'energy')
+        laue_row_start = self.row
+        self.laue_fields = []
+        for title, key in [('Minimum energy [keV]', 'energy_min'), ('Maximum energy [keV]', 'energy_max'), ('Fixed omega [deg]', 'omega'), ('Laue polarization', 'laue_polarization')]:
+            self.laue_fields.append(self.field(title, key))
+        self.source_field = self.field('Source spectrum', 'source', choices=['Flat', 'W', 'Cr', 'Cu', 'CSV'])
+        self.tube_field = self.field('Reference tube [kV]', 'tube_voltage', choices=['40', '80', '120'])
+        self.spectrum_field = self.field('Spectrum CSV', 'spectrum_file', button=('Browse', self.browse_spectrum))
+        self.weight_field = self.field('Laue markers', 'laue_weight', choices=['Spectral', 'Uniform'])
+        self.colour_field = self.field('Laue colour', 'colour', choices=['Relative weight', 'Energy'])
+        ttk.Button(form, text='Preview source spectrum', command=self.preview_spectrum).grid(row=self.row, column=0, columnspan=3, sticky='ew')
+        self.row += 1
+        ttk.Label(form, text='Tube references: 12° anode, 1 mm Be, 1 mm Al.\nLaue spectral weight = S(E) × F² × P; not calibrated intensity.\nUniform: geometry only. Imported CSV: photons/keV (relative allowed).', wraplength=330).grid(row=self.row, column=0, columnspan=3, sticky='w')
+        self.row += 1
+        self.laue_controls = [widget for widget in form.winfo_children() if widget.grid_info() and int(widget.grid_info()['row']) >= laue_row_start]
+        self.mono_polarization = self.field('Mono polarization [-1,1]', 'polarization')
         ttk.Label(form, text='0.95: nearly horizontal; 0: unpolarized.\nBlank: disable polarization factor.', wraplength=330).grid(row=self.row, column=0, columnspan=3, sticky='w')
         self.row += 1
         self.field('Distance [mm]', 'distance')
@@ -233,6 +344,9 @@ class Application:
         self.scan_help.grid(row=self.row, column=0, columnspan=3, sticky='w', pady=5)
         self.row += 1
         self.vars['mode'].trace_add('write', self.update_scan_inputs)
+        self.vars['beam_mode'].trace_add('write', self.update_beam_inputs)
+        self.vars['source'].trace_add('write', self.update_beam_inputs)
+        self.update_beam_inputs()
         self.update_scan_inputs()
         self.field('Display minimum [%]', 'minimum')
         buttons = ttk.Frame(form)
@@ -243,7 +357,7 @@ class Application:
         ttk.Button(buttons, text='Help', command=self.help).pack(side='left')
         self.row += 1
         for label, command in [('Save settings', self.save_settings), ('Load settings', self.load_settings),
-                               ('Export CSV tables', self.export_csv), ('Export orientations', self.export_orientations), ('Export snapshot as png', self.export_png)]:
+                               ('Export CSV tables', self.export_csv), ('Export orientations (EulerZXZ)', self.export_orientations), ('Export snapshot as png', self.export_png)]:
             ttk.Button(form, text=label, command=command).grid(row=self.row, column=0, columnspan=3, sticky='ew', pady=2)
             self.row += 1
 
@@ -266,6 +380,7 @@ class Application:
         self.canvas.bind('<MouseWheel>', self.zoom_wheel)
         self.canvas.bind('<Motion>', self.hover_info)
         self.canvas.bind('<Leave>', self.clear_hover)
+        self.canvas.bind('<Double-Button-1>', self.spot_info)
         self.cursor_info = tk.StringVar(value='Move over the detector to inspect pixel coordinates and relative signal intensity.')
         cursor_label = tk.Label(plot_area, textvariable=self.cursor_info, anchor='w', justify='left', wraplength=740, height=3, width=1,
                                 background=background, foreground=ttk.Style(root).lookup('TLabel', 'foreground') or '#000000', font='TkDefaultFont', borderwidth=0)
@@ -303,12 +418,30 @@ class Application:
         self.table.grid(row=0, column=0, sticky='nsew')
         self.table.bind('<<TreeviewSelect>>', self.highlight)
         table_note = ttk.Label(table_area, text='Table: powder-profile intensities (azimuth-averaged P). Plot: relative F² × P × L; grey rings in grain mode are guides. No absolute photon counts or absorption/detector response.', wraplength=740)
+        self.table_note = table_note
         table_note.grid(row=2, column=0, columnspan=2, sticky='ew', pady=5)
         status_label = ttk.Label(table_area, textvariable=self.status, wraplength=820)
         status_label.grid(row=3, column=0, columnspan=2, sticky='ew')
         table_area.bind('<Configure>', lambda event: [label.configure(wraplength=max(200, event.width - 10)) for label in (table_note, status_label)])
         plot_area.bind('<Configure>', lambda event: [label.configure(wraplength=max(200, event.width - 10)) for label in (self.info, self.view_help, cursor_label)])
         root.after(100, self.poll)
+
+    def update_euler_setting(self, *args):
+        """Store the three editable angle entries in the serializable settings field."""
+        if not self.updating_euler:
+            self.updating_euler = True
+            self.vars['single_euler'].set(','.join(variable.get() for variable in self.euler_values))
+            self.updating_euler = False
+
+    def update_euler_entries(self, *args):
+        """Refresh angle entries when loading settings or assigning an orientation."""
+        if not self.updating_euler:
+            values = self.vars['single_euler'].get().replace(',', ' ').split()
+            if len(values) == 3:
+                self.updating_euler = True
+                for variable, value in zip(self.euler_values, values):
+                    variable.set(value)
+                self.updating_euler = False
 
     def schedule_crystal_info(self, *args):
         """Clear old metadata immediately and coalesce edits to the selected CIF/block."""
@@ -461,7 +594,7 @@ class Application:
 
     def update_scan_inputs(self, *args):
         """Explain scan inputs and disable them for orientation-averaged powder."""
-        powder = self.vars['mode'].get() == 'Powder rings'
+        powder = self.vars['mode'].get() == 'Powder rings' or self.vars['beam_mode'].get() == 'Polychromatic (Laue)'
         for widget in self.scan_fields:
             widget.configure(state='disabled' if powder else 'normal')
         text = 'Powder rings average over orientations; rotation scan settings do not apply.' if powder else (
@@ -470,10 +603,68 @@ class Application:
             'Width is angular exposure, not calculation accuracy. Each ideal reflection belongs to one frame; no rocking width.\n'
             'Press Calculate after changing these inputs.')
         self.scan_help.configure(text=text)
+        if self.vars['beam_mode'].get() == 'Polychromatic (Laue)':
+            self.scan_help.configure(text='Laue uses the fixed omega above. No rotation integration or frame width is applied.')
+
+    def update_beam_inputs(self, *args):
+        """Enable beam-specific inputs without changing a completed calculation."""
+        laue = self.vars['beam_mode'].get() == 'Polychromatic (Laue)'
+        modes = ['Single orientation', 'Random grains', 'Imported orientations']
+        self.sample_mode.configure(values=modes if laue else ['Powder rings'] + modes)
+        if laue and self.vars['mode'].get() == 'Powder rings':
+            self.vars['mode'].set('Single orientation')
+        self.energy_field.configure(state='disabled' if laue else 'normal')
+        self.mono_polarization.configure(state='disabled' if laue else 'normal')
+        for widget in self.laue_controls:
+            if laue:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        for widget in self.laue_fields:
+            widget.configure(state='normal' if laue else 'disabled')
+        for widget in (self.source_field, self.weight_field, self.colour_field):
+            widget.configure(state='readonly' if laue else 'disabled')
+        self.tube_field.configure(state='readonly' if laue and self.vars['source'].get() in ('W', 'Cr', 'Cu') else 'disabled')
+        voltages = TUBE_VOLTAGES.get(self.vars['source'].get(), ('40', '80', '120'))
+        self.tube_field.configure(values=voltages)
+        if self.vars['tube_voltage'].get() not in voltages:
+            self.vars['tube_voltage'].set(voltages[0])
+        self.spectrum_field.configure(state='normal' if laue and self.vars['source'].get() == 'CSV' else 'disabled')
+        self.update_scan_inputs()
+
+    def browse_spectrum(self):
+        """Select a CSV photon spectral-density file."""
+        path = filedialog.askopenfilename(filetypes=[('Spectrum CSV', '*.csv')])
+        if path:
+            self.vars['spectrum_file'].set(path)
+            self.vars['source'].set('CSV')
+
+    def preview_spectrum(self):
+        """Plot current source settings on a small Tk canvas without extra dependencies."""
+        try:
+            settings = self.snapshot()
+            spectrum = source_spectrum(settings)
+            low, high = float(settings['energy_min']), float(settings['energy_max'])
+            if not 0 < low < high or not math.isfinite(high):
+                raise ValueError('Require 0 < Emin < Emax.')
+            grid = [low] + [e for e in spectrum.get('energies', []) if low < e < high] + [high]
+            density = evaluate_spectrum(spectrum, grid)
+            maximum = max(density) or 1
+            window = tk.Toplevel(self.root)
+            window.title('Source photon spectral density')
+            canvas = tk.Canvas(window, width=720, height=320, background='#101c2c')
+            canvas.pack()
+            points = [coordinate for e, v in zip(grid, density) for coordinate in (55 + 610*(e - low)/(high - low), 270 - 230*v/maximum)]
+            canvas.create_line(*points, fill='#4bdae8')
+            canvas.create_text(360, 300, text='Energy [{:g}, {:g}] keV'.format(low, high), fill='white')
+            canvas.create_text(360, 18, text='Photon density per keV, normalized for preview', fill='white')
+            ttk.Label(window, text='\n'.join(spectrum['comments']), wraplength=700).pack(padx=10, pady=8)
+        except Exception as error:
+            messagebox.showerror('Spectrum', str(error))
 
     def update_scan_view(self):
         """Show the calculated scan interval and enable only meaningful view controls."""
-        grain_scan = self.result is not None and bool(self.result['matrices'])
+        grain_scan = self.result is not None and bool(self.result['matrices']) and not self.result.get('laue')
         self.integrated_box.configure(state='normal' if grain_scan else 'disabled')
         self.frame_box.configure(state='normal' if grain_scan and not self.integrated.get() else 'disabled')
         if not grain_scan:
@@ -494,6 +685,8 @@ class Application:
                 lower = start + frame*step
                 text = 'Frame {} of 0-{}: omega [{:g}, {:g}) deg (end excluded). Use arrows or type a frame and press Enter.'.format(frame, count - 1, lower, min(lower + step, end))
         self.view_help.configure(text=text)
+        if self.result is not None and self.result.get('laue'):
+            self.view_help.configure(text='Fixed omega {}° | {}–{} keV | Exact harmonics summed per grain; energy colour uses their weight-averaged energy. No Laue intensity/response correction.'.format(self.result['settings']['omega'], self.result['settings']['energy_min'], self.result['settings']['energy_max']))
 
     def section(self, title):
         """Add a compact section heading."""
@@ -544,7 +737,7 @@ class Application:
 
     def browse_orientations(self):
         """Select an orientation file; contents are validated during calculation."""
-        path = filedialog.askopenfilename(filetypes=[('Orientation files', '*.csv *.txt'), ('All files', '*.*')])
+        path = filedialog.askopenfilename(title='Bunge EulerZXZ angles in degrees', filetypes=[('Euler angle files', '*.csv *.txt'), ('All files', '*.*')])
         if path:
             self.vars['orientation_file'].set(path)
             self.vars['mode'].set('Imported orientations')
@@ -605,6 +798,26 @@ class Application:
         self.rectangle_mode.set(False)
         self.change_drag_mode()
         self.table.delete(*self.table.get_children())
+        if result.get('laue'):
+            columns = ('grain', 'hkl', 'energy', 'wavelength', 'omega', 'col', 'row', 'weight')
+            self.table.configure(columns=columns)
+            for key, title in zip(columns, ('Grain', 'HKL', 'Energy [keV]', 'Wavelength [Å]', 'Omega [deg]', 'Column', 'Row', 'Spectral weight')):
+                self.table.heading(key, text=title)
+                self.table.column(key, width=110, minwidth=85, anchor='center')
+            for index, event in enumerate(result['events']):
+                self.table.insert('', 'end', iid=str(index), values=(event['grain'], str(event['hkl'])) + tuple('{:.6g}'.format(event[key]) for key in ('energy_keV', 'wavelength_A', 'omega', 'col', 'row', 'spectral_weight')))
+            self.frame.set(0)
+            self.frame_box.configure(to=0)
+            self.info.configure(text='{} | {} | Laue | fixed omega {}° | {}–{} keV'.format(result['settings']['block'], result['spacegroup'], result['settings']['omega'], result['settings']['energy_min'], result['settings']['energy_max']))
+            self.table_note.configure(text='Each row is one signed HKL at its own energy. Harmonics share a plotted marker. Spectral weight S(E) × F² × P is approximate: no Laue Jacobian, absorption, anomalous scattering or detector response.')
+            self.draw()
+            return
+        columns = ('index', 'hkl', 'd', 'inv_d', 'tth', 'mult', 'intensity', 'relative')
+        self.table.configure(columns=columns)
+        for key, title in zip(columns, ('Index', 'HKL representative', 'd [Å]', '1/d [Å⁻¹]', '2theta [deg]', 'Multiplicities', 'Intensity [a.u.]', 'Relative [%]')):
+            self.table.heading(key, text=title)
+            self.table.column(key, width=100, minwidth=80, anchor='center')
+        self.table_note.configure(text='Powder table: azimuth-averaged P. Plot: relative F² × P × L. No absolute counts or detector response.')
         for i, line in enumerate(result['lines']):
             self.table.insert('', 'end', iid=str(i), values=(line['index'], str(line['hkl']), '{:.5f}'.format(line['d']), '{:.5f}'.format(1/line['d']), '{:.4f}'.format(line['two_theta']),
                               line['multiplicity'], '{:.3g}'.format(line['intensity']), '{:.3f}'.format(line['relative'])))
@@ -620,6 +833,8 @@ class Application:
         if self.result is None:
             return [], []
         minimum = float(self.result['settings']['minimum'])
+        if self.result.get('laue'):
+            return [], [event for event in self.result['groups'] if event['intensity'] > 0 and 100*event['intensity']/self.result['intensity_max'] >= minimum]
         lines = [line for line in self.result['lines'] if line['relative'] >= minimum]
         maximum = self.result['intensity_max']
         try:
@@ -646,6 +861,10 @@ class Application:
         cx, cy = x0 + (d['cx'] + 0.5)*scale, y0 + (d['cy'] + 0.5)*scale
         lines, events = self.visible_data()
         maximum = self.result['intensity_max']
+        laue = self.result.get('laue', False)
+        energy_colour = laue and self.result['settings']['colour'] == 'Energy'
+        if energy_colour:
+            low, high = float(self.result['settings']['energy_min']), float(self.result['settings']['energy_max'])
         if self.overlay.get() or not self.result['matrices']:
             for line in lines:
                 for u0, v0, u1, v1, color in ring_segments(line, d, self.result['polarization'], maximum, bool(self.result['matrices'])):
@@ -657,7 +876,12 @@ class Application:
         for event in events[::stride]:
             x, y = x0 + (event['col'] + 0.5)*scale, y0 + (event['row'] + 0.5)*scale
             color = intensity_color(event['intensity']/maximum)
-            item = self.canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=color, outline='')
+            if energy_colour:
+                low, high = float(self.result['settings']['energy_min']), float(self.result['settings']['energy_max'])
+                color = intensity_color((event['energy_keV'] - low)/(high - low))
+            selected = laue and self.selected_line is not None and self.selected_line in event.get('members', [])
+            radius = 4 if selected else 2
+            item = self.canvas.create_oval(x - radius, y - radius, x + radius, y + radius, fill=color, outline='white' if selected else '')
             self.hover_items[item] = ('spot', (x, y, x, y), event)
             if left <= x <= right and top <= y <= bottom:
                 self.drawn_spots.append((x, y, event))
@@ -680,12 +904,16 @@ class Application:
             self.canvas.create_rectangle(bar_x, bar_y + index*bar_height/100, bar_x + 16, bar_y + (index + 1)*bar_height/100,
                                          fill=intensity_color(1 - (index + 0.5)/100), outline='', tags='intensity_scale')
         for percent in (0, 25, 50, 75, 100):
-            self.canvas.create_text(bar_x + 22, bar_y + (1 - percent/100)*bar_height, anchor='w', fill='#b9c9dc', text=str(percent))
-        self.canvas.create_text(bar_x, bar_y - 25, fill='#b9c9dc', text='Intensity\n[%]', tags='intensity_scale')
+            label = '{:.4g}'.format(low + (high - low)*percent/100) if energy_colour else str(percent)
+            self.canvas.create_text(bar_x + 22, bar_y + (1 - percent/100)*bar_height, anchor='w', fill='#b9c9dc', text=label)
+        scale_title = 'Energy\n[keV]' if energy_colour else ('Weight\n[%]' if laue else 'Intensity\n[%]')
+        self.canvas.create_text(bar_x, bar_y - 25, fill='#b9c9dc', text=scale_title, tags='intensity_scale')
         text = '{} powder lines; {} grains; {} detected events; {} in current view.'.format(len(lines), len(self.result['matrices']), len(self.result['events']), len(events))
         if stride > 1:
             text += ' Preview decimated 1:{}; CSV contains all events.'.format(stride)
-        if self.result['matrices'] and not self.integrated.get():
+        if laue:
+            text = '{} grains; {} HKL contributions; {} harmonic groups; {} visible. Weights are approximate.'.format(len(self.result['matrices']), len(self.result['events']), len(self.result['groups']), len(events))
+        if self.result['matrices'] and not self.integrated.get() and not laue:
             settings = self.result['settings']
             try:
                 start = float(settings['start']) + self.frame.get()*float(settings['step'])
@@ -741,6 +969,9 @@ class Application:
             spot = nearest['spot'][1]
             intensity = spot['intensity']
             text += ' | Nearest spot I = {:.5g} a.u. ({:.2f}%) | Grain {} HKL {}'.format(intensity, 100*intensity/self.result['intensity_max'], spot['grain'], spot['hkl'])
+            if self.result.get('laue'):
+                text = 'Pixel ({:.2f}, {:.2f}) | Grain {} | Marker weight {:.5g} | Contributions: '.format(col, row, spot['grain'], intensity)
+                text += '; '.join('{} at {:.5g} keV'.format(member['hkl'], member['energy_keV']) for member in spot['members'])
         elif 'ring' in nearest and not self.result['matrices']:
             line = nearest['ring'][1]
             point = pixel_lab(d, col, row)
@@ -759,7 +990,8 @@ class Application:
     def highlight(self, event=None):
         """Highlight the ring selected in the reflection table."""
         selection = self.table.selection()
-        self.selected_line = self.result['lines'][int(selection[0])] if selection and self.result else None
+        collection = self.result['events'] if self.result and self.result.get('laue') else (self.result['lines'] if self.result else [])
+        self.selected_line = collection[int(selection[0])] if selection and self.result else None
         self.draw()
 
     def spot_info(self, event):
@@ -767,6 +999,10 @@ class Application:
         if self.drawn_spots:
             x, y, spot = min(self.drawn_spots, key=lambda item: (item[0] - event.x)**2 + (item[1] - event.y)**2)
             if math.hypot(x - event.x, y - event.y) < 12:
+                if self.result.get('laue'):
+                    messagebox.showinfo('Laue harmonic contributions', 'Grain {} | pixel ({:.5f}, {:.5f})\n'.format(spot['grain'], spot['col'], spot['row']) + '\n'.join(
+                        'HKL {} | {:.7g} keV | weight {:.7g}'.format(member['hkl'], member['energy_keV'], member['spectral_weight']) for member in spot['members']))
+                    return
                 self.status.set('Grain {} | HKL {} | omega {:.5f} deg | 2theta {:.5f} deg | I={:.4g} a.u. | |F|²={:.4g}, P={:.4g}, L={:.4g}'.format(
                     spot['grain'], spot['hkl'], spot['omega'], spot['two_theta'], spot['intensity'], spot['f2'], spot['polarization'], spot['lorentz']))
 
@@ -790,6 +1026,8 @@ class Application:
                 if not isinstance(settings, dict):
                     raise ValueError('Expected a settings dictionary.')
                 settings = settings_from_disk(settings)
+                for key in ('beam_mode', 'energy_min', 'energy_max', 'omega', 'source', 'tube_voltage', 'spectrum_file', 'laue_polarization', 'colour', 'laue_weight', 'single_euler'):
+                    settings.setdefault(key, DEFAULTS[key])
                 # Files saved before tilt inputs existed describe an untilted detector.
                 for key in ('tilt_x', 'tilt_y', 'tilt_z'):
                     settings.setdefault(key, '0')
@@ -812,6 +1050,16 @@ class Application:
         if not path:
             return
         base = os.path.splitext(path)[0]
+        if self.result.get('laue'):
+            targets = [base + suffix for suffix in ('_laue.csv', '_laue_settings.json')]
+            if any(os.path.exists(target) for target in targets) and not messagebox.askyesno('Overwrite exports?', 'Replace existing Laue exports?'):
+                return
+            try:
+                export_laue(self.result, base)
+                self.status.set('Saved Laue reflection table and settings including the source spectrum.')
+            except Exception as error:
+                messagebox.showerror('Export failed', str(error))
+            return
         targets = [base + suffix for suffix in ('_reflections.csv', '_rings.csv', '_spots.csv', '_settings.json')]
         if any(os.path.exists(target) for target in targets) and not messagebox.askyesno('Overwrite exports?', 'One or more output files already exist. Replace them?'):
             return
@@ -838,9 +1086,9 @@ class Application:
             messagebox.showerror('Export failed', str(error))
 
     def export_orientations(self):
-        """Save the exact matrices used by the displayed calculation."""
+        """Save the displayed grain orientations as equivalent Bunge ZXZ Euler angles."""
         if not self.result or not self.result['matrices']:
-            messagebox.showinfo('Orientations', 'Calculate a random or imported grain sample first.')
+            messagebox.showinfo('Orientations', 'Calculate a single, random or imported grain sample first.')
             return
         path = filedialog.asksaveasfilename(defaultextension='.csv', filetypes=[('Orientations', '*.csv')])
         if path:
@@ -869,10 +1117,15 @@ class Application:
         """Explain coordinate, orientation, exposure and intensity conventions."""
         messagebox.showinfo('Conventions & scope',
             'X: incident beam; Z: vertical up; Y: outward, right-handed.\n'
+            'Laue mode: fixed omega, analytical wavelength for every signed HKL.\n'
+            'Laue weight S(E) x F squared x P is not quantitative intensity.\n'
+            'No rotation Lorentz factor is used in Laue mode. Harmonics overlap.\n'
             '+omega: counter-clockwise viewed from +Z toward the origin.\n'
             'U maps crystal Cartesian column vectors into the sample at omega=0.\n'
             'Crystal basis: a along x; b in xy; c has positive z; B=A^(-T), no 2*pi.\n'
-            'Orientation CSV: U11,U12,U13,U21,U22,U23,U31,U32,U33.\n'
+            'Bunge EulerZXZ input/export: phi1_deg,Phi_deg,phi2_deg.\n'
+            'U = Rz(phi1) Rx(Phi) Rz(phi2), crystal to sample at omega zero.\n'
+            'Default Euler angles put cubic sample Z 5.39 degrees from [001].\n'
             'Zero tilt: columns +Y, rows -Z; zero-based pixel centres.\n'
             'Detector tilts: right-handed fixed lab X then Y then Z (Rz Ry Rx).\n'
             'Pivot: direct-beam point (distance,0,0); distance is along +X.\n\n'
@@ -905,7 +1158,7 @@ def smoke_test(report_path):
         root = tk.Tk()
         root.withdraw()
         application = Application(root)
-        if application.crystal_values[-1].get() != '229':
+        if application.example_name.get() != 'Ni.cif' or application.vars['block'].get() != 'Ni' or application.crystal_values[-1].get() != '225':
             raise RuntimeError('Initial crystal metadata mismatch.')
         application.use_cif(os.path.join(ROOT, 'examples', 'Al_fcc.cif'))
         application.update_crystal_info()
@@ -1000,7 +1253,45 @@ def smoke_test(report_path):
                 if abs(saved.info['dpi'][0] - 300) > 0.01 or saved.size != snapshot.size:
                     raise RuntimeError('PNG snapshot size/DPI mismatch.')
         report.update(ok=True, lines=len(result['lines']), spots=len(result['events']), presets=len(application.presets), examples=len(example_cifs()), tk=root.tk.call('info', 'patchlevel'))
+        application.vars['beam_mode'].set('Polychromatic (Laue)')
+        application.vars['mode'].set('Single orientation')
+        if application.vars['energy_min'].get() != '5' or application.vars['energy_max'].get() != '120':
+            raise RuntimeError('Laue default energy range is incorrect.')
+        if application.vars['source'].get() != 'W' or application.vars['tube_voltage'].get() != '120':
+            raise RuntimeError('Laue default source must be tungsten at 120 kV.')
+        application.vars['single_euler'].set('10,20,30')
+        if [variable.get() for variable in application.euler_values] != ['10', '20', '30']:
+            raise RuntimeError('Euler entries did not follow settings.')
+        application.euler_values[0].set('15')
+        if application.vars['single_euler'].get() != '15,20,30':
+            raise RuntimeError('Euler settings did not follow entries.')
+        application.vars['single_euler'].set(DEFAULTS['single_euler'])
+        if any(str(widget.cget('state')) != 'disabled' for widget in application.scan_fields):
+            raise RuntimeError('Laue rotation-scan inputs must be disabled.')
+        for target, voltages in TUBE_VOLTAGES.items():
+            for voltage in voltages:
+                source_spectrum(dict(source=target, tube_voltage=voltage))
+        laue_result = calculate(dict(DEFAULTS, beam_mode='Polychromatic (Laue)', mode='Single orientation', source='W', colour='Energy', minimum='0'))
+        application.show_result(laue_result)
+        root.update()
+        if not application.drawn_spots or application.table.heading('energy')['text'] != 'Energy [keV]':
+            raise RuntimeError('Laue GUI did not display energy-resolved reflections.')
+        x, y, spot = application.drawn_spots[0]
+        application.update_hover(x, y)
+        if 'keV' not in application.cursor_info.get():
+            raise RuntimeError('Laue hover omitted energy.')
+        application.table.selection_set('0')
+        application.highlight()
+        canvas_snapshot(application.canvas)
+        application.show_result(calculate(dict(DEFAULTS, beam_mode='Polychromatic (Laue)', mode='Single orientation', energy_min='1', energy_max='1.01', colour='Energy')))
+        root.update()
+        application.show_result(result)
+        root.update()
+        if application.table.heading('mult')['text'] != 'Multiplicities':
+            raise RuntimeError('Returning to monochromatic table failed.')
+        report.update(laue_spots=len(laue_result['events']), laue_groups=len(laue_result['groups']), source_spectra=sum(len(values) for values in TUBE_VOLTAGES.values()))
     except Exception:
+        report['ok'] = False
         report['error'] = traceback.format_exc()
     finally:
         if root is not None:

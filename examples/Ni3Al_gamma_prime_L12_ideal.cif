@@ -1,0 +1,30 @@
+# Literature-based ideal model, assembled 2026-11-08; not a database deposit.
+# Source: Nunes et al., ISIJ International 55 (2015) 2450-2454, Table 1.
+# https://doi.org/10.2355/isijinternational.ISIJINT-2015-111
+# Lattice parameter chosen at the lower end of the reported 3.561-3.568 A range.
+# Pure Ni3Al, full chemical order, full occupancies, zero displacement parameters.
+# Actual alloy composition, temperature and coherency strain may change the cell.
+data_Ni3Al_gamma_prime_L12_ideal
+_chemical_name_common 'Gamma prime Ni3Al, ideal L12 model'
+_chemical_formula_sum 'Al Ni3'
+_cell_length_a 3.561
+_cell_length_b 3.561
+_cell_length_c 3.561
+_cell_angle_alpha 90
+_cell_angle_beta 90
+_cell_angle_gamma 90
+_cell_formula_units_Z 1
+_space_group_name_H-M_alt 'P m -3 m'
+_space_group_IT_number 221
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_symmetry_multiplicity
+_atom_site_Wyckoff_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_atom_site_U_iso_or_equiv
+Al1 Al 1 a 0 0 0 1 0
+Ni1 Ni 3 c 0.5 0.5 0 1 0

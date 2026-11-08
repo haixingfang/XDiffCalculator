@@ -1,0 +1,32 @@
+# Literature-based ideal model, assembled 2026-11-08; not a database deposit.
+# Source: Nunes et al., ISIJ International 55 (2015) 2450-2454, Table 1.
+# https://doi.org/10.2355/isijinternational.ISIJINT-2015-111
+# Reported a=0.3624 nm and c=0.7406 nm converted to angstrom below.
+# Tetragonal gamma double prime; NOT the orthorhombic Ni3Nb delta phase.
+# Full chemical order, full occupancies, zero displacement parameters.
+# Actual alloy composition, temperature and coherency strain may change the cell.
+data_Ni3Nb_gamma_double_prime_D022_ideal
+_chemical_name_common 'Gamma double prime Ni3Nb, ideal D022 model'
+_chemical_formula_sum 'Nb Ni3'
+_cell_length_a 3.624
+_cell_length_b 3.624
+_cell_length_c 7.406
+_cell_angle_alpha 90
+_cell_angle_beta 90
+_cell_angle_gamma 90
+_cell_formula_units_Z 2
+_space_group_name_H-M_alt 'I 4/m m m'
+_space_group_IT_number 139
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_symmetry_multiplicity
+_atom_site_Wyckoff_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_atom_site_U_iso_or_equiv
+Nb1 Nb 2 a 0 0 0 1 0
+Ni1 Ni 2 b 0 0 0.5 1 0
+Ni2 Ni 4 d 0 0.5 0.25 1 0

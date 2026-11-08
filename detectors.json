@@ -39,6 +39,21 @@
     "source": "User-specified imaging-camera configuration",
     "note": "Effective pixel pitch at the scintillator/detection plane, already accounting for magnification. Optical PSF and scintillator response are not modelled."
   },
+  "CCD_4x_3.362um": {
+    "columns": 2032, "rows": 2032, "pixel_y": 3.362, "pixel_z": 3.362,
+    "source": "User-specified imaging-camera configuration",
+    "note": "Effective pixel pitch at the detection plane, already accounting for magnification. Optical PSF and scintillator response are not modelled."
+  },
+  "CCD_quadro_24um": {
+    "columns": 2040, "rows": 2040, "pixel_y": 24, "pixel_z": 24,
+    "source": "User-specified detector configuration",
+    "note": "Full image geometry only; detector response and point-spread function are not modelled."
+  },
+  "Varian_127um": {
+    "columns": 1456, "rows": 1840, "pixel_y": 127, "pixel_z": 127,
+    "source": "User-specified detector configuration",
+    "note": "Width 1456 columns, height 1840 rows. Detector response and point-spread function are not modelled."
+  },
   "Hamamatsu_2x_3.25um": {
     "columns": 2048, "rows": 2048, "pixel_y": 3.25, "pixel_z": 3.25,
     "source": "User-specified imaging-camera configuration",

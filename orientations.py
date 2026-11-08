@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Author: Haixing Fang
 # Email: haixingfang868@gmail.com
-"""Uniform rotations and explicit crystal-to-sample matrix import."""
+"""Uniform rotations and Bunge ZXZ Euler-angle input/output in degrees."""
 from __future__ import division
 
 import csv
@@ -48,36 +48,81 @@ def random_orientations(number, seed=12345):
     return matrices
 
 
+def euler_to_matrix(angles):
+    """Convert Bunge Euler angles to the crystal-to-sample matrix U.
+    Args:
+        angles: (phi1, Phi, phi2) in degrees, with Phi in [0,180].
+    Returns:
+        matrix: U = Rz(phi1) Rx(Phi) Rz(phi2), the transpose of the
+            conventional passive Bunge sample-to-crystal matrix.
+    """
+    if len(angles) != 3:
+        raise ValueError('Expected three Bunge Euler angles: phi1, Phi, phi2 in degrees.')
+    phi1, Phi, phi2 = [float(value) for value in angles]
+    if not all(math.isfinite(value) for value in (phi1, Phi, phi2)) or not 0 <= Phi <= 180:
+        raise ValueError('Euler angles must be finite and Phi must be in [0,180] degrees.')
+    a, b, c = [math.radians(value) for value in (phi1 % 360, Phi, phi2 % 360)]
+    ca, sa, cb, sb, cc, sc = math.cos(a), math.sin(a), math.cos(b), math.sin(b), math.cos(c), math.sin(c)
+    return [[ca*cc - sa*cb*sc, -ca*sc - sa*cb*cc, sa*sb],
+            [sa*cc + ca*cb*sc, -sa*sc + ca*cb*cc, -ca*sb],
+            [sb*sc, sb*cc, cb]]
+
+
+def matrix_to_euler(matrix):
+    """Convert crystal-to-sample U to canonical Bunge ZXZ angles in degrees.
+    Args:
+        matrix: Proper 3 by 3 rotation matrix.
+    Returns:
+        angles: phi1/phi2 in [0,360), Phi in [0,180]. At Phi=0 or 180,
+            set phi2=0 and retain the equivalent combined rotation in phi1.
+            No crystal-symmetry reduction is applied.
+    """
+    u = validate_rotation(matrix)
+    sine = math.hypot(u[2][0], u[2][1])
+    Phi = math.atan2(sine, u[2][2])
+    if sine < 1e-12:
+        phi1, phi2 = math.atan2(u[1][0], u[0][0]), 0.0
+    else:
+        phi1, phi2 = math.atan2(u[0][2], -u[1][2]), math.atan2(u[2][0], u[2][1])
+    return [math.degrees(phi1) % 360, math.degrees(Phi), math.degrees(phi2) % 360]
+
+
 def load_orientations(path):
-    """Read one row-major U matrix per CSV/whitespace line; optional U11..U33 header."""
+    """Read Bunge ZXZ Euler angles (degrees), one phi1/Phi/phi2 triple per row.
+    Args:
+        path: CSV or whitespace TXT, with optional phi1_deg,Phi_deg,phi2_deg
+            or phi1,Phi,phi2 header. Blank lines and # comments are allowed.
+    Returns:
+        matrices: Crystal-to-sample rotations for the existing diffraction core.
+    """
     matrices = []
-    header = ['U11', 'U12', 'U13', 'U21', 'U22', 'U23', 'U31', 'U32', 'U33']
+    headers = [['phi1_deg', 'Phi_deg', 'phi2_deg'], ['phi1', 'Phi', 'phi2']]
     with open(path, 'r', encoding='utf-8-sig') as stream:
         for line_number, line in enumerate(stream, 1):
             line = line.split('#', 1)[0].strip()
             if not line:
                 continue
             fields = line.replace(',', ' ').split()
-            if fields == header and not matrices:
+            if fields in headers and not matrices:
                 continue
+            if len(fields) == 9:
+                raise ValueError('Orientation line {}: matrix files are no longer accepted. Supply phi1_deg,Phi_deg,phi2_deg (Bunge ZXZ).'.format(line_number))
             try:
                 values = [float(value) for value in fields]
-                if len(values) != 9:
-                    raise ValueError('Expected nine matrix entries.')
-                matrices.append(validate_rotation([values[0:3], values[3:6], values[6:9]]))
+                matrices.append(euler_to_matrix(values))
             except ValueError as error:
                 raise ValueError('Orientation line {}: {}'.format(line_number, error))
             if len(matrices) > 100000:
                 raise ValueError('Orientation file exceeds 100000 grains.')
     if not matrices:
-        raise ValueError('No orientation matrices found.')
+        raise ValueError('No Euler-angle orientations found.')
     return matrices
 
 
 def save_orientations(path, matrices):
-    """Export row-major crystal-to-sample matrices with an explicit CSV header."""
+    """Export calculated orientations as Bunge phi1/Phi/phi2 angles in degrees."""
     with open(path, 'w', newline='', encoding='utf-8') as stream:
         writer = csv.writer(stream)
-        writer.writerow(['U11', 'U12', 'U13', 'U21', 'U22', 'U23', 'U31', 'U32', 'U33'])
+        writer.writerow(['phi1_deg', 'Phi_deg', 'phi2_deg'])
         for matrix in matrices:
-            writer.writerow(['{:.15g}'.format(value) for row in validate_rotation(matrix) for value in row])
+            writer.writerow(['{:.15g}'.format(value) for value in matrix_to_euler(matrix)])

@@ -18,14 +18,43 @@ The screenshot shows the bundled Fe bcc example at 40 keV with an EIGER2 X CdTe 
 ## Features
 
 - CIF selection with lattice parameters and space-group number (`sgno`).
-- Powder rings, uniformly random grain orientations, or imported orientation matrices.
+- Monochromatic rotation scans or fixed-omega polychromatic (Laue) snapshots.
+- Laue energy filtering, single/imported/random orientations, W/Cr/Cu reference tube spectra or CSV import.
+- Energy-coloured Laue spots, harmonic-aware hover/details, spectrum preview and per-HKL CSV export.
+- Powder rings, uniformly random grain orientations, or imported Bunge ZXZ Euler angles in degrees.
 - Detector presets, custom pixel geometry and three detector tilt angles.
 - HKL table with zero-based index, d spacing, reciprocal spacing, multiplicity and relative intensity.
 - Structure-factor, polarization and geometry-dependent Lorentz factors.
 - Omega scans with integrated or individual-frame views.
 - Resizable panels, rectangle zoom, mouse-wheel zoom and left-drag panning.
 - Cursor readout of detector coordinates, nearby signal intensity and ring HKL.
-- CSV data, orientation matrices, JSON settings and 300-dpi PNG snapshots.
+- CSV data, Bunge Euler-angle orientation exports, JSON settings and 300-dpi PNG snapshots.
+
+## White-beam / Laue simulation
+
+![Laue simulation at fixed omega with energy-coloured diffraction spots](docs/images/laue_gui.png)
+
+Choose **Polychromatic (Laue)** under Beam mode. Select **Single orientation**, **Random grains**, or **Imported orientations**. **Single EulerZXZ (Bunge)** accepts three angles `phi1, Phi, phi2` in degrees, in three labelled entries. The default is **301.891410°, 5.389322°, 57.994617°**, placing sample Z about **5.39° from [001]** in a cubic IPF-Z plot. All grains remain at the origin.
+
+The default energy window is **5–120 keV**. Set **Fixed omega** in degrees. Edited or loaded energy limits are preserved when switching modes. Tube voltage remains a separate source setting: for example, a W 80 kV source has no photons above 80 keV even if the accepted band ends at 120 keV. Rotation-scan/frame controls are disabled in Laue mode. Each signed HKL has its wavelength solved analytically: with `g = Rz(omega) U B hkl`, `lambda = -2 gx / dot(g,g)` and `E = 12.3984198433/lambda`. Only positive wavelengths, energies in the inclusive input band and rays intersecting the detector within max 2theta are retained. Detector tilts use the same geometry as monochromatic mode.
+
+Source options:
+
+- Default on a fresh launch: **W (tungsten), 120 kV**, with the **5–120 keV** accepted energy band. User edits and explicitly loaded settings are retained when switching modes.
+- **Flat:** constant relative photon spectral density per keV in the selected band.
+- **W:** bundled 40/80/120 kV reference tube spectra.
+- **Cr, Cu:** bundled 40/50 kV reference tube spectra, respecting the generator's supported voltage range.
+- **CSV:** external photon spectral density, for measured tubes or synchrotron beams. Header must be `energy_keV,photon_density`; energies must be positive and strictly increasing; densities finite and nonnegative. Comments beginning with `#` are preserved. Relative densities are allowed, but values must be per keV rather than integrated per bin. Linear interpolation is used, with zero outside the supplied support.
+
+Tube references were generated using **SpekPy 2.5.4**, `casim`, a 12-degree anode angle, 1 mm Be + 1 mm Al filtration, 100 cm on-axis distance and 1 mAs. They contain bremsstrahlung and characteristic lines on 0.05-keV bins. They are reference conditions, not a calibration of your tube. Import CSV for other voltages, filters, take-off angles or sources. The executable needs no SpekPy installation. See [spectrum provenance](spectra/README.md).
+
+**Preview source spectrum** shows current inputs; **Calculate** applies all inputs to the diffraction result. **Uniform** markers show all geometrically permitted harmonic groups, including where a sampled source has zero flux. **Spectral** markers use the approximate weight `S_E(E) * |F|^2 * P`. The default Laue polarization is zero (unpolarized), independently of the monochromatic default. Blank disables the polarization correction.
+
+These weights are **not quantitative Laue intensities or detector counts**: no Laue integration Jacobian, absorption, anomalous scattering, finite mosaic/line profile or detector response is included. The monochromatic rotation Lorentz factor is deliberately not used. The tabulated characteristic-line bins are interpolated; narrow-line weights depend on that binning and should not be interpreted as resolved line profiles.
+
+The table retains every signed HKL and its own energy. Exact harmonics are summed per grain for display. Energy colouring uses the group's weight-averaged energy (arithmetic mean when all weights vanish). Hover lists the contributing HKLs/energies; double-click opens the full list. Contributions from different grains remain separate markers even when they overlap. The energy legend therefore represents a displayed group average, not an energy-resolving detector measurement.
+
+CSV export saves `_laue.csv` with all contributions and `_laue_settings.json` with source samples/comments/hash, actual U matrices, equivalent `euler_bunge_deg` triples, the orientation convention and model assumptions. **Save settings** separately saves reloadable GUI inputs. Fixed-omega Laue powder integration and continuous-rotation white-beam exposures are not implemented. Existing monochromatic powder and scan workflows remain available.
 
 ## Run on Windows
 
@@ -36,6 +65,8 @@ The file produced at `dist/XDiffCalculator.exe` is a standalone **Windows x64** 
 The Windows executable has been tested locally; validation on another clean Windows machine remains recommended.
 
 ## Quick start
+
+The default example crystal is **Ni.cif** (block `Ni`, cubic Fm-3m, space-group number 225).
 
 1. Choose an example CIF or use **Browse**, then select the structure block.
 2. Select **Powder rings**, **Random grains**, or **Imported orientations**.
@@ -114,6 +145,9 @@ All dimensions are columns × rows.
 | marana_7.5x_1.47um | 2048 × 2048 | 1.47 |
 | marana_5x_2.2um | 2048 × 2048 | 2.2 |
 | Hamamatsu_2x_3.25um | 2048 × 2048 | 3.25 |
+| CCD_4x_3.362um | 2032 × 2032 | 3.362 |
+| CCD_quadro_24um | 2040 × 2040 | 24 |
+| Varian_127um | 1456 × 1840 | 127 |
 
 Camera pitches are effective pitches at the detection plane, already accounting for magnification. Detector dimensions include gap coordinates, but inactive module/chip gaps and detector response are not simulated. Manufacturer references are recorded in `detectors.json`.
 
@@ -131,14 +165,28 @@ Frame width is an angular exposure interval, not numerical search accuracy. Exac
 
 An orientation U maps crystal Cartesian column vectors into the sample frame at omega=0. The reciprocal basis is `B=A^(-T)`, without 2π, with crystal a along +x and b in xy. Scattering uses `g_lab=Rz(omega) U B hkl`.
 
-Orientation CSV/TXT files contain one row-major matrix per row, optionally headed:
+The input convention is **Bunge intrinsic ZXZ**, in degrees, with angles ordered `phi1, Phi, phi2`. Internally:
 
 ```text
-U11,U12,U13,U21,U22,U23,U31,U32,U33
-1,0,0,0,1,0,0,0,1
+U = Rz(phi1) Rx(Phi) Rz(phi2)
 ```
 
-Matrices must be proper rotations. Invalid inputs are rejected. Euler/Rodrigues import is not supported. **Export orientations** saves the exact matrices used by the calculation.
+Here R denotes right-handed active elementary rotations. U maps crystal to sample and is the transpose of the conventional passive Bunge sample-to-crystal matrix, consistent with [MTEX's crystal-to-specimen orientation convention](https://mtex-toolbox.github.io/OrientationDefinition.html). Omega is a separate sample rotation about laboratory Z; it is not included in exported grain orientations.
+
+Orientation CSV/TXT files contain one triple per row, optionally headed:
+
+```text
+phi1_deg,Phi_deg,phi2_deg
+0,0,0
+90,0,0
+301.891410,5.389322,57.994617
+```
+
+Comma or whitespace separators, blank lines and `#` comments are supported. The header `phi1,Phi,phi2` is also accepted. All angles must be finite, with Phi in [0,180] degrees; phi1 and phi2 are periodic modulo 360. Nine-column matrix files are rejected with an explanatory message.
+
+**Export orientations (EulerZXZ)** saves the calculated grain orientations as equivalent Bunge degree triples, including random-grain orientations. Exported phi1/phi2 lie in [0,360), Phi in [0,180]. At Phi=0 or 180, Euler angles are not unique: phi2 is set to zero and phi1 retains the equivalent rotation. No crystal-symmetry reduction is applied. Export/import preserves the rotation within numerical precision, not necessarily the original angle spelling. Random orientations remain Haar-uniform rotations; Euler angles are not independently sampled uniformly.
+
+The default Euler triple reproduces the earlier near-[001] example: `U.T * [0,0,1]` is approximately `[0.07964636,0.04977897,0.99557949]`. This is an illustrative orientation, not a universal Ni-superalloy orientation. Legacy JSON settings containing `single_u` are converted to Euler angles on load; legacy matrix CSV files must be converted separately.
 
 ## Relative intensities and limitations
 
@@ -220,6 +268,10 @@ The smoke test exercises an invisible GUI and checks bundled resources and 300-d
 | --- | --- |
 | `app.py` | GUI, calculation orchestration and exports |
 | `diffraction.py` | CIF, reflections, structure factors and grain events |
+| `laue.py` | Fixed-omega wavelengths, detector hits, harmonic groups and spectral weights |
+| `spectrum.py` | Lightweight CSV spectrum validation and interpolation |
+| `spectra/` | Bundled tube reference spectra and provenance |
+| `tools/generate_spectra.py` | Optional build-only SpekPy reference generator |
 | `geometry.py` | Detector geometry, rotations and ray intersections |
 | `orientations.py` | Random generation and orientation import/export |
 | `snapshot.py` | High-resolution PNG rendering |

@@ -90,6 +90,22 @@ def reflections(structure, energy, max_two_theta, cancel=None):
     if angle >= 90:
         raise ValueError('Maximum 2theta must be below 90 degrees.')
     dmin = wavelength/(2*math.sin(math.radians(angle/2)))
+    result = enumerate_reflections(structure, dmin, cancel)
+    for record in result:
+        record['two_theta'] = math.degrees(2*math.asin(min(1, wavelength/(2*record['d']))))
+    return sorted(result, key=lambda item: (item['two_theta'], item['hkl']))
+
+
+def enumerate_reflections(structure, dmin, cancel=None):
+    """Enumerate signed HKLs without choosing a wavelength.
+    Args:
+        structure: Validated Gemmi structure from load_crystal.
+        dmin: Minimum spacing in angstrom.
+        cancel: Optional threading.Event.
+    Returns:
+        records: HKL, reciprocal vector (no 2*pi), spacing and neutral-atom F squared.
+    """
+    dmin = positive(dmin, 'Minimum spacing')
     cell = structure.cell
     limits = [int(math.ceil(length/dmin)) for length in (cell.a, cell.b, cell.c)]
     if (2*limits[0] + 1)*(2*limits[1] + 1)*(2*limits[2] + 1) > 2000000:
@@ -114,9 +130,8 @@ def reflections(structure, energy, max_two_theta, cancel=None):
                 f2 = abs(calculator.calculate_sf_from_small_structure(structure, hkl))**2
                 if f2 <= 1e-16:
                     continue
-                tth = math.degrees(2*math.asin(min(1, wavelength/(2*d))))
-                result.append(dict(hkl=hkl, g=matvec(basis, hkl), d=d, two_theta=tth, f2=f2))
-    return sorted(result, key=lambda item: (item['two_theta'], item['hkl']))
+                result.append(dict(hkl=hkl, g=matvec(basis, hkl), d=d, f2=f2))
+    return sorted(result, key=lambda item: (-item['d'], item['hkl']))
 
 
 def polarization_factor(two_theta, azimuth=None, polarization=0.95):

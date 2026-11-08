@@ -10,5 +10,5 @@ if (-not (Test-Path -LiteralPath $pythonExe)) {
 # Keep -OneFile accepted for existing commands; every build now has one output.
 $bundleMode = '--onefile'
 $outputDirectory = 'dist'
-& $pythonExe -m PyInstaller --noconfirm --clean --windowed $bundleMode --distpath $outputDirectory --name XDiffCalculator --icon 'assets\XDiffCalculator.ico' --copy-metadata gemmi --add-data 'detectors.json;.' --add-data 'examples;examples' --add-data 'assets;assets' app.py
+& $pythonExe -m PyInstaller --noconfirm --clean --windowed $bundleMode --distpath $outputDirectory --name XDiffCalculator --icon 'assets\XDiffCalculator.ico' --copy-metadata gemmi --add-data 'detectors.json;.' --add-data 'examples;examples' --add-data 'assets;assets' --add-data 'spectra;spectra' app.py
 if ($LASTEXITCODE -ne 0) { throw 'Executable build failed.' }

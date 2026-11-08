@@ -1,4 +1,35 @@
-# Validation record — 2026-11-07
+# Validation record — 2026-11-08
+
+## Nickel startup crystal
+
+- Default example is now examples/Ni.cif, block Ni, space group 225. Updated the README and portable-settings expectation.
+- All 42 tests passed. Source and rebuilt standalone smoke tests confirmed the default selection and Ni calculations: 18 powder lines, 62 monochromatic grain events, 212 Laue contributions and 179 harmonic groups. No commit or push performed.
+
+## Tungsten defaults and additional detector presets
+
+- Default Laue source is W at 120 kV, with the existing 5-120 keV energy window. Explicitly edited or loaded source settings remain preserved across mode switches.
+- Added user-specified CCD_4x_3.362um (2032 columns x 2032 rows, 3.362 um), CCD_quadro_24um (2040 x 2040, 24 um), and Varian_127um (1456 columns x 1840 rows, 127 um). Pixel pitches apply to both axes; camera magnification is already included in the supplied effective pitch.
+- All 42 tests passed, including extended detector dimension/pitch checks. Source and rebuilt standalone smoke tests passed with all 12 presets, including preset application/beam centring and the new Laue source defaults. Updated README. No commit or push performed.
+
+## Bunge Euler inputs/exports and 5-120 keV defaults
+
+- Replaced the single nine-value U field with three labelled degree entries under Single EulerZXZ (Bunge), and changed orientation file import/export to phi1_deg,Phi_deg,phi2_deg. Internal diffraction matrices remain crystal-to-sample U=Rz(phi1) Rx(Phi) Rz(phi2), the transpose of the passive Bunge matrix. The bundled examples/orientations.csv now uses Euler triples.
+- Default angles are (301.891410, 5.389322, 57.994617) degrees, matching the previously supplied near-[001] cubic IPF-Z orientation within 2e-8 in matrix elements. Default Laue energy range is 5-120 keV; explicitly edited/loaded values remain preserved across mode switches.
+- Legacy single_u JSON settings convert to Euler angles when single_euler is absent. Legacy nine-column orientation files are rejected with guidance; no silent reinterpretation. Laue provenance exports now include Euler triples and an explicit orientation convention alongside internal U matrices.
+- All 42 tests passed in ImageD11_py3p12, including independent elementary-rotation composition, 1000 random Euler/matrix round trips, exact/near singular Phi=0/180 cases, CSV round trips/errors, default IPF-Z direction and legacy single-U settings migration.
+- Source and rebuilt executable smoke tests passed, including three-entry/settings synchronization, mode-switch energy defaults, mono/Laue calculations and energy hover. Updated default case: 229 Laue contributions, 195 harmonic groups. Monochromatic reference remains 16 powder lines/61 events.
+- Visually inspected refreshed monochromatic and Laue GUI screenshots in docs/images. Updated README and application help. Executable size is 24,235,814 bytes. No commit or push performed.
+
+## Fixed-omega Laue mode and source spectra
+
+- Added energy-independent signed-HKL enumeration, fixed-omega analytical wavelengths and projection through the existing tilted detector. Cached Laue enumeration keys include CIF path, size, nanosecond modification time, block and spacing bound.
+- Added single-U input, random/imported orientations, separate mono/Laue controls, energy band, source preview, energy/weight colouring, harmonic-aware hover and double-click details, and per-HKL exports with embedded source provenance and actual orientation matrices.
+- All 37 tests passed in ImageD11_py3p12. New checks cover analytical wavelength/position/harmonic energy ratios, same-position weight sums, nonzero-omega tilted-detector agreement with the monochromatic solver, band/sign/angular rejection, cancellation, invalid inputs, CSV validation/interpolation, reference-source support, cache reuse and full export content.
+- Generated seven reference tube spectra with isolated build-only SpekPy 2.5.4: W 40/80/120 kV, Cr and Cu 40/50 kV. Fixed conditions and per-keV units are recorded in every CSV and spectra/README.md. SpekPy and its numerical dependencies are not application imports or executable dependencies.
+- Source and standalone GUI smoke tests passed: original 16 powder lines/61 mono grain events, Laue 62 contributions/46 harmonic groups, seven bundled spectra, nine detectors, 177 CIFs. Checks include switching tables, disabled scan controls, energy hover, empty Laue results, selection highlighting and PNG rendering.
+- Visually inspected the real Laue GUI screenshot docs/images/laue_gui.png, captured with the user-approved Pillow method. It shows a single Fe bcc grain, omega 13 degrees, 5-80 keV, W 80 kV reference spectrum, and the energy table/legend.
+- Rebuilt dist/XDiffCalculator.exe, 24,232,783 bytes, and passed its expanded smoke test. No commit or push performed.
+- Scientific boundary: spectral weights are S_E*F_squared*P, not quantitative Laue intensity. No Laue integration Jacobian, anomalous scattering, absorption, finite line/rocking profile or detector response. Uniform markers are geometry-only. Exact harmonics are grouped per grain; different-grain overlaps are not merged. Powder white-beam integration and continuous-rotation white-beam exposures remain outside this implementation.
 
 ## Logo and README GUI preview
 

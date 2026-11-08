@@ -123,7 +123,7 @@ class CalculatorTests(unittest.TestCase):
                 validate_rotation(matrix)
 
     def test_orientation_csv_roundtrip(self):
-        """Exported row-major matrices can be loaded without convention changes."""
+        """Euler export/import preserves calculated crystal-to-sample rotations."""
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, 'orientations.csv')
             matrices = random_orientations(5, 11)
@@ -262,7 +262,7 @@ class CalculatorTests(unittest.TestCase):
     def test_portable_example_settings(self):
         """Packaged examples must not retain temporary single-file extraction paths."""
         saved = settings_for_disk(DEFAULTS)
-        self.assertEqual(saved['cif'], '@example/Fe_bcc.cif')
+        self.assertEqual(saved['cif'], '@example/Ni.cif')
         restored = settings_from_disk(saved)
         self.assertEqual(restored['cif'], DEFAULTS['cif'])
         with self.assertRaises(ValueError):
@@ -275,7 +275,8 @@ class CalculatorTests(unittest.TestCase):
         expected = {'EIGER2 X CdTe 4M': (2068, 2162, 75), 'EIGER2 X CdTe 16M': (4148, 4362, 75),
                     'marana_20x_0.55um': (2048, 2048, 0.55), 'marana_10x_1.1um': (2048, 2048, 1.1),
                     'marana_7.5x_1.47um': (2048, 2048, 1.47), 'marana_5x_2.2um': (2048, 2048, 2.2),
-                    'Hamamatsu_2x_3.25um': (2048, 2048, 3.25)}
+                    'Hamamatsu_2x_3.25um': (2048, 2048, 3.25), 'CCD_4x_3.362um': (2032, 2032, 3.362),
+                    'CCD_quadro_24um': (2040, 2040, 24), 'Varian_127um': (1456, 1840, 127)}
         for name, (columns, rows, pitch) in expected.items():
             preset = presets[name]
             self.assertEqual((preset['columns'], preset['rows'], preset['pixel_y'], preset['pixel_z']), (columns, rows, pitch, pitch))
