@@ -14,7 +14,7 @@ import unittest
 import gemmi
 
 from app import DEFAULTS, calculate, settings_for_disk, settings_from_disk, example_cifs, intensity_color, ring_segments
-from diffraction import cif_blocks, crystal_metadata, load_crystal, reflections, powder_lines, simulate_spots, polarization_factor, lorentz_factor
+from diffraction import cif_blocks, crystal_metadata, space_group_metadata, load_crystal, reflections, powder_lines, simulate_spots, polarization_factor, lorentz_factor
 from geometry import HC_KEV_ANGSTROM, detector_geometry, maximum_two_theta, omega_solutions, detector_hit, matvec
 from orientations import random_orientations, validate_rotation, load_orientations, save_orientations
 
@@ -53,10 +53,22 @@ class CalculatorTests(unittest.TestCase):
                 stream.write(text + text.replace('data_first', 'data_second').replace('_cell_length_a 4', '_cell_length_a 7'))
             with self.assertRaises(ValueError):
                 crystal_metadata(path)
-            self.assertEqual(crystal_metadata(path, 'first'), dict(cell=[4, 5, 6, 80, 95, 110], sgno=1))
+            self.assertEqual(crystal_metadata(path, 'first'), dict(cell=[4, 5, 6, 80, 95, 110], sgno=1, crystal_system='Triclinic', short_name='P1'))
             self.assertEqual(crystal_metadata(path, 'second')['cell'][0], 7)
             with self.assertRaises(ValueError):
                 crystal_metadata(path, 'missing')
+
+    def test_space_group_descriptions(self):
+        """Cover all systems, screw/axis distinctions and rhombohedral settings."""
+        cases = [(2, 'Triclinic', 'P1\u0305'), (14, 'Monoclinic', 'P2₁/c'),
+                 (19, 'Orthorhombic', 'P2₁2₁2₁'), (139, 'Tetragonal', 'I4/mmm'),
+                 (145, 'Trigonal', 'P3₂'), (149, 'Trigonal', 'P312'),
+                 (166, 'Trigonal', 'R3\u0305m'), (194, 'Hexagonal', 'P6₃/mmc'),
+                 (225, 'Cubic', 'Fm3\u0305m')]
+        for number, system, symbol in cases:
+            self.assertEqual(space_group_metadata(gemmi.SpaceGroup(number)), dict(sgno=number, crystal_system=system, short_name=symbol))
+        self.assertEqual(space_group_metadata(gemmi.SpaceGroup('R -3 m:R'))['short_name'], 'R3\u0305m')
+        self.assertEqual(space_group_metadata(None), dict(sgno=None, crystal_system=None, short_name=None))
 
     def test_bcc_extinctions_spacing_and_multiplicity(self):
         """BCC 110 has multiplicity 12 and d=a/sqrt(2); odd h+k+l is absent."""

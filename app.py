@@ -9,6 +9,7 @@ import csv
 import json
 import math
 import os
+import heapq
 import queue
 import threading
 import tempfile
@@ -31,7 +32,7 @@ DEFAULTS = dict(cif=os.path.join(ROOT, 'examples', 'Ni.cif'), block='Ni', mode='
                 center_col='1033.5', center_row='1080.5', tilt_x='0', tilt_y='0', tilt_z='0', max_tth='40', start='0', end='2', step='0.25', minimum='0.1')
 DEFAULTS.update(beam_mode='Monochromatic', energy_min='5', energy_max='120', omega='0', source='W', tube_voltage='120',
                 spectrum_file='', laue_polarization='0', colour='Relative weight', laue_weight='Spectral',
-                single_euler='301.891410,5.389322,57.994617')
+                single_euler='269.178546842,27.3683882123,93.4990822005')
 
 
 def example_cifs(directory=None):
@@ -228,6 +229,7 @@ class Application:
         self.drag_start = None
         self.drag_moved = False
         self.rectangle_mode = tk.BooleanVar(value=False)
+        self.laue_labels = tk.BooleanVar(value=False)
         self.metadata_job = None
         self.vars = dict((key, tk.StringVar(value=value)) for key, value in DEFAULTS.items())
         self.status = tk.StringVar(value='Choose a CIF and calculate. All grains are at the origin.')
@@ -299,7 +301,7 @@ class Application:
             ttk.Entry(euler_frame, textvariable=variable, width=10).grid(row=1, column=index, sticky='ew', padx=(0, 4))
             variable.trace_add('write', self.update_euler_setting)
         self.vars['single_euler'].trace_add('write', self.update_euler_entries)
-        ttk.Label(form, text='phi1, Phi, phi2 in degrees; crystal → sample.\nDefault: 5.39° from [001] in cubic IPF-Z.', wraplength=330).grid(row=self.row, column=0, columnspan=3, sticky='w')
+        ttk.Label(form, text='phi1, Phi, phi2 in degrees; crystal → sample.\nDefault: 27.37° from [001] in cubic IPF-Z.', wraplength=330).grid(row=self.row, column=0, columnspan=3, sticky='w')
         self.row += 1
         self.field('Number of grains', 'number')
         self.field('Random seed', 'seed')
@@ -393,6 +395,8 @@ class Application:
         ttk.Label(zoom_bar, textvariable=self.zoom_info).pack(side='left', padx=8)
         toolbar = ttk.Frame(plot_area)
         toolbar.pack(fill='x', pady=5)
+        self.laue_labels_box = ttk.Checkbutton(plot_area, text='Label top 10 strongest Laue spots', variable=self.laue_labels, command=self.draw)
+        self.laue_labels_box.pack(anchor='w')
         self.integrated_box = ttk.Checkbutton(toolbar, text='All frames (integrated scan)', variable=self.integrated, command=self.draw)
         self.integrated_box.pack(side='left')
         ttk.Checkbutton(toolbar, text='Ring overlay', variable=self.overlay, command=self.draw).pack(side='left', padx=8)
@@ -453,7 +457,7 @@ class Application:
         self.metadata_job = self.root.after(150, self.update_crystal_info)
 
     def update_crystal_info(self):
-        """Display cell and space-group number for the currently selected input."""
+        """Display lattice parameters, crystal system and short space-group name."""
         if self.metadata_job is not None:
             self.root.after_cancel(self.metadata_job)
             self.metadata_job = None
@@ -462,7 +466,7 @@ class Application:
             values = ['{:.5g}'.format(value) for value in metadata['cell']] + [metadata['sgno'] if metadata['sgno'] is not None else '—']
             for variable, value in zip(self.crystal_values, values):
                 variable.set(value)
-            text = '' if metadata['sgno'] is not None else 'Space group could not be resolved.'
+            text = 'Crystal system: {}\nShort name: {}'.format(metadata['crystal_system'], metadata['short_name']) if metadata['sgno'] is not None else 'Space group could not be resolved.'
         except Exception as error:
             for variable in self.crystal_values:
                 variable.set('—')
@@ -666,6 +670,7 @@ class Application:
         """Show the calculated scan interval and enable only meaningful view controls."""
         grain_scan = self.result is not None and bool(self.result['matrices']) and not self.result.get('laue')
         self.integrated_box.configure(state='normal' if grain_scan else 'disabled')
+        self.laue_labels_box.configure(state='normal' if self.result is not None and self.result.get('laue') else 'disabled')
         self.frame_box.configure(state='normal' if grain_scan and not self.integrated.get() else 'disabled')
         if not grain_scan:
             text = 'Calculate a grain-mode scan to browse frames. Powder rings have no individual frames.'
@@ -873,7 +878,13 @@ class Application:
                     self.hover_items[item] = ('ring', coordinates, line)
         limit = 20000
         stride = max(1, int(math.ceil(len(events)/limit)))
-        for event in events[::stride]:
+        labelled = []
+        if laue and self.laue_labels.get():
+            labelled = heapq.nlargest(10, (event for event in events if sum(member['spectral_weight'] for member in event['members']) > 0), key=lambda event: sum(member['spectral_weight'] for member in event['members']))
+        plotted = events[::stride]
+        plotted_ids = set(id(event) for event in plotted)
+        plotted += [event for event in labelled if id(event) not in plotted_ids]
+        for event in plotted:
             x, y = x0 + (event['col'] + 0.5)*scale, y0 + (event['row'] + 0.5)*scale
             color = intensity_color(event['intensity']/maximum)
             if energy_colour:
@@ -894,6 +905,7 @@ class Application:
             self.canvas.create_rectangle(*box, fill='#101c2c', outline='')
         # Draw the visible plot frame last so clipping masks cannot cover its edges.
         self.canvas.create_rectangle(clip_left, clip_top, clip_right, clip_bottom, outline='#9bb0c9', tags='plot_border')
+        self.draw_laue_labels(labelled, scale, x0, y0, (left, top, right, bottom))
         title = '+Z up | +Y right | view along incident beam (+X)'
         if any(abs(value) > 1e-12 for value in d['tilts']):
             title = 'Detector pixel view | tilts X={:g}°, Y={:g}°, Z={:g}°'.format(*d['tilts'])
@@ -923,6 +935,42 @@ class Application:
         self.status.set(text)
         if self.hover_xy is not None:
             self.update_hover(*self.hover_xy)
+
+    def draw_laue_labels(self, events, scale, x0, y0, bounds):
+        """Label ranked harmonic groups using their strongest individual reflection.
+        Args:
+            events: Up to ten groups ranked by summed spectral weight.
+            scale, x0, y0: Detector-to-canvas transform.
+            bounds: Plot viewport in canvas coordinates, including detector margins.
+        Returns:
+            None. Draws labels and connecting lines on the canvas.
+        """
+        left, top, right, bottom = bounds
+        occupied = []
+        for event in events:
+            x, y = x0 + (event['col'] + 0.5)*scale, y0 + (event['row'] + 0.5)*scale
+            if not left <= x <= right or not top <= y <= bottom:
+                continue
+            member = max(event['members'], key=lambda entry: entry['spectral_weight'])
+            text = 'Grain {} | ({}, {}, {})\n{:.2f} keV'.format(member['grain'], *member['hkl'], member['energy_keV'])
+            if len(event['members']) > 1:
+                text += ' (+{} hkl)'.format(len(event['members']) - 1)
+            item = self.canvas.create_text(0, 0, text=text, anchor='nw', justify='left', fill='#ffffff', font=('Segoe UI', 9, 'bold'), tags='laue_spot_label')
+            box = self.canvas.bbox(item)
+            w, h = box[2] - box[0], box[3] - box[1]
+            candidates = []
+            for dx, dy in [(dx, dy) for dx in (10, -w - 10, w + 20, -2*w - 20) for dy in (-h - 8, 8, -2*h - 16, h + 16, -3*h - 24, 2*h + 24)]:
+                tx, ty = max(left + 3, min(right - w - 3, x + dx)), max(top + 3, min(bottom - h - 3, y + dy))
+                overlap = sum(max(0, min(tx + w + 3, b[2]) - max(tx - 3, b[0]))*max(0, min(ty + h + 3, b[3]) - max(ty - 3, b[1])) for b in occupied)
+                candidates.append((overlap, (tx - x)**2 + (ty - y)**2, tx, ty))
+            _, _, tx, ty = min(candidates)
+            self.canvas.move(item, tx - box[0], ty - box[1])
+            box = self.canvas.bbox(item)
+            occupied.append(box)
+            connector = self.canvas.create_line(x, y, max(box[0], min(box[2], x)), max(box[1], min(box[3], y)), fill='#c6d5e8', tags='laue_label_connector')
+            background = self.canvas.create_rectangle(box[0] - 2, box[1] - 1, box[2] + 2, box[3] + 1, fill='#101c2c', outline='', tags='laue_label_background')
+            self.canvas.tag_lower(connector, item)
+            self.canvas.tag_lower(background, item)
 
     def clear_hover(self, event=None):
         """Clear the readout when the cursor leaves the plot canvas."""
@@ -1125,7 +1173,7 @@ class Application:
             'Crystal basis: a along x; b in xy; c has positive z; B=A^(-T), no 2*pi.\n'
             'Bunge EulerZXZ input/export: phi1_deg,Phi_deg,phi2_deg.\n'
             'U = Rz(phi1) Rx(Phi) Rz(phi2), crystal to sample at omega zero.\n'
-            'Default Euler angles put cubic sample Z 5.39 degrees from [001].\n'
+            'Default Euler angles put cubic sample Z 27.37 degrees from [001].\n'
             'Zero tilt: columns +Y, rows -Z; zero-based pixel centres.\n'
             'Detector tilts: right-handed fixed lab X then Y then Z (Rz Ry Rx).\n'
             'Pivot: direct-beam point (distance,0,0); distance is along +X.\n\n'
@@ -1160,6 +1208,8 @@ def smoke_test(report_path):
         application = Application(root)
         if application.example_name.get() != 'Ni.cif' or application.vars['block'].get() != 'Ni' or application.crystal_values[-1].get() != '225':
             raise RuntimeError('Initial crystal metadata mismatch.')
+        if application.crystal_info.get() != 'Crystal system: Cubic\nShort name: Fm3\u0305m':
+            raise RuntimeError('Crystal system or short space-group name is missing.')
         application.use_cif(os.path.join(ROOT, 'examples', 'Al_fcc.cif'))
         application.update_crystal_info()
         if application.crystal_values[-1].get() != '225':
@@ -1276,6 +1326,20 @@ def smoke_test(report_path):
         root.update()
         if not application.drawn_spots or application.table.heading('energy')['text'] != 'Energy [keV]':
             raise RuntimeError('Laue GUI did not display energy-resolved reflections.')
+        application.laue_labels_box.invoke()
+        label_items = application.canvas.find_withtag('laue_spot_label')
+        expected_groups = sorted((group for group in laue_result['groups'] if sum(member['spectral_weight'] for member in group['members']) > 0), key=lambda group: sum(member['spectral_weight'] for member in group['members']), reverse=True)[:10]
+        if len(label_items) != len(expected_groups):
+            raise RuntimeError('Laue strongest-spot labels have the wrong count.')
+        for item, group in zip(label_items, expected_groups):
+            member = max(group['members'], key=lambda entry: entry['spectral_weight'])
+            expected_text = 'Grain {} | ({}, {}, {})\n{:.2f} keV'.format(member['grain'], *member['hkl'], member['energy_keV'])
+            if not application.canvas.itemcget(item, 'text').startswith(expected_text):
+                raise RuntimeError('Laue label rank, HKL or energy is incorrect.')
+        canvas_snapshot(application.canvas)
+        application.laue_labels_box.invoke()
+        if application.canvas.find_withtag('laue_spot_label'):
+            raise RuntimeError('Laue labels did not switch off.')
         x, y, spot = application.drawn_spots[0]
         application.update_hover(x, y)
         if 'keV' not in application.cursor_info.get():
@@ -1284,9 +1348,14 @@ def smoke_test(report_path):
         application.highlight()
         canvas_snapshot(application.canvas)
         application.show_result(calculate(dict(DEFAULTS, beam_mode='Polychromatic (Laue)', mode='Single orientation', energy_min='1', energy_max='1.01', colour='Energy')))
+        application.laue_labels_box.invoke()
+        if application.canvas.find_withtag('laue_spot_label'):
+            raise RuntimeError('Empty Laue result must not have labels.')
         root.update()
         application.show_result(result)
         root.update()
+        if application.canvas.find_withtag('laue_spot_label') or str(application.laue_labels_box.cget('state')) != 'disabled':
+            raise RuntimeError('Laue labels must be disabled for monochromatic results.')
         if application.table.heading('mult')['text'] != 'Multiplicities':
             raise RuntimeError('Returning to monochromatic table failed.')
         report.update(laue_spots=len(laue_result['events']), laue_groups=len(laue_result['groups']), source_spectra=sum(len(values) for values in TUBE_VOLTAGES.values()))

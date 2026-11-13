@@ -37,13 +37,12 @@ class EulerTests(unittest.TestCase):
         for Phi in (0, 180):
             self.assertEqual(matrix_to_euler(euler_to_matrix([30, Phi, 80]))[2], 0)
 
-    def test_default_matches_previous_ipf_z_example(self):
+    def test_default_matches_updated_ipf_z_example(self):
         matrix = single_orientation(DEFAULTS['single_euler'])
-        expected = [[0.99681528, 0, -0.07974522], [-0.00396964, 0.99876026, -0.04962044], [0.07964636, 0.04977897, 0.99557949]]
-        self.assert_matrix_close(matrix, expected, 2e-8)
-        self.assertAlmostEqual(math.degrees(math.acos(matrix[2][2])), 5.389322, places=6)
-        self.assertGreater(matrix[2][0], matrix[2][1])
-        self.assertGreater(matrix[2][1], 0)
+        self.assertEqual([float(value) for value in DEFAULTS['single_euler'].split(',')], [269.178546842, 27.3683882123, 93.4990822005])
+        for actual, expected in zip(matrix[2], [0.45885287848271045, -0.028057266631399395, 0.8880691559204753]):
+            self.assertAlmostEqual(actual, expected, places=12)
+        self.assertAlmostEqual(math.degrees(math.acos(matrix[2][2])), 27.3683882123, places=9)
         self.assertEqual((DEFAULTS['energy_min'], DEFAULTS['energy_max']), ('5', '120'))
 
     def test_legacy_single_matrix_settings(self):

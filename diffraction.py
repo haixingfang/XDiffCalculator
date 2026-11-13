@@ -5,6 +5,7 @@
 from __future__ import division
 
 import math
+import re
 import gemmi
 
 from geometry import HC_KEV_ANGSTROM, positive, matvec, maximum_two_theta, omega_solutions, detector_hit
@@ -16,13 +17,36 @@ def cif_blocks(path):
     return [block.name for block in gemmi.cif.read_file(path) if block.find_value('_cell_length_a')]
 
 
+def space_group_metadata(spacegroup):
+    """Describe the resolved space group using short Hermann-Mauguin notation.
+    Args:
+        spacegroup: Gemmi SpaceGroup in the CIF setting, or None if unresolved.
+    Returns:
+        metadata: sgno, crystal_system and short_name, with None for unknown values.
+            The short name uses Unicode subscripts and overbars, retaining R
+            for rhombohedral groups in either hexagonal or rhombohedral axes.
+    """
+    if spacegroup is None:
+        return dict(sgno=None, crystal_system=None, short_name=None)
+    system = spacegroup.crystal_system_str()
+    tokens = spacegroup.hm.split()
+    if system == 'monoclinic':
+        tokens = [token for token in tokens if token != '1']
+    # Work on separate axis tokens: P 32 and P 3 2 must remain distinguishable.
+    subscripts = str.maketrans('12345', '₁₂₃₄₅')
+    tokens = [re.sub(r'([2346])([1-5])', lambda match: match[1] + match[2].translate(subscripts), token) for token in tokens]
+    symbol = re.sub(r'-([12346])', lambda match: match[1] + '\u0305', ''.join(tokens))
+    return dict(sgno=spacegroup.number, crystal_system=system.capitalize(), short_name=symbol)
+
+
 def crystal_metadata(path, block_name=None):
     """Read lattice metadata without requiring valid scattering sites.
     Args:
         path: Local CIF file.
         block_name: Unit-cell block; required when several blocks are available.
     Returns:
-        metadata: Cell lengths in angstrom, angles in degrees and sgno (or None).
+        metadata: Cell lengths in angstrom, angles in degrees, sgno, crystal_system
+            and short_name. Unresolved space-group fields are None.
     """
     document = gemmi.cif.read_file(path)
     names = [block.name for block in document if block.find_value('_cell_length_a')]
@@ -34,7 +58,7 @@ def crystal_metadata(path, block_name=None):
     cell = structure.cell
     if not all(math.isfinite(value) for value in cell.parameters) or min(cell.a, cell.b, cell.c) <= 0 or not cell.volume > 0:
         raise ValueError('Invalid unit cell.')
-    return dict(cell=list(cell.parameters), sgno=structure.spacegroup.number if structure.spacegroup else None)
+    return dict(cell=list(cell.parameters), **space_group_metadata(structure.spacegroup))
 
 
 def load_crystal(path, block_name=None):

@@ -1,4 +1,11 @@
-# Validation record — 2026-11-08
+# Validation record — 2026-11-13
+
+## Default Euler orientation and crystal-system display
+
+- Updated the default Bunge ZXZ angles to (269.178546842, 27.3683882123, 93.4990822005) degrees, including the GUI hint, help text, README and example orientation CSV. Existing explicitly loaded orientations remain unchanged.
+- CIF metadata now displays the crystal system and short Hermann–Mauguin symbol beneath the lattice parameters, including Unicode screw-axis subscripts and overbars. Unresolved groups remain explicitly unresolved; invalid input clears the previous description.
+- All 43 tests and source GUI smoke checks passed. Added checks covering all seven crystal systems, screw-axis versus separate-axis notation, both rhombohedral settings and unresolved groups. Independently checked the formatted symbols against Gemmi short symbols for all 230 reference groups (normalizing H to conventional R).
+- Source and rebuilt standalone smoke checks passed: 206 Laue contributions and 165 harmonic groups with the new orientation. Visually checked the metadata and Euler controls. Earlier validation entries below describe previous defaults.
 
 ## Nickel startup crystal
 

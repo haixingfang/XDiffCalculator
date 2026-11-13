@@ -17,7 +17,7 @@ The screenshot shows the bundled Fe bcc example at 40 keV with an EIGER2 X CdTe 
 
 ## Features
 
-- CIF selection with lattice parameters and space-group number (`sgno`).
+- CIF selection with lattice parameters, space-group number (`sgno`), crystal system and short Hermann–Mauguin space-group name.
 - Monochromatic rotation scans or fixed-omega polychromatic (Laue) snapshots.
 - Laue energy filtering, single/imported/random orientations, W/Cr/Cu reference tube spectra or CSV import.
 - Energy-coloured Laue spots, harmonic-aware hover/details, spectrum preview and per-HKL CSV export.
@@ -36,7 +36,7 @@ The screenshot shows the bundled Fe bcc example at 40 keV with an EIGER2 X CdTe 
 
 The screenshot shows the Ni example at a fixed omega of 13°, using a W 120 kV source and a 5–120 keV energy window. **Relative weight** colouring displays the approximate spectral weights, with the colour bar labelled **Weight [%]** and normalized to the strongest displayed harmonic group.
 
-Choose **Polychromatic (Laue)** under Beam mode. Select **Single orientation**, **Random grains**, or **Imported orientations**. **Single EulerZXZ (Bunge)** accepts three angles `phi1, Phi, phi2` in degrees, in three labelled entries. The default is **301.891410°, 5.389322°, 57.994617°**, placing sample Z about **5.39° from [001]** in a cubic IPF-Z plot. All grains remain at the origin.
+Choose **Polychromatic (Laue)** under Beam mode. Select **Single orientation**, **Random grains**, or **Imported orientations**. **Single EulerZXZ (Bunge)** accepts three angles `phi1, Phi, phi2` in degrees, in three labelled entries. The default is **269.178546842°, 27.3683882123°, 93.4990822005°**, placing sample Z about **27.37° from [001]**, near the [001]–[101] edge in a cubic IPF-Z plot. All grains remain at the origin.
 
 The default energy window is **5–120 keV**. Set **Fixed omega** in degrees. Edited or loaded energy limits are preserved when switching modes. Tube voltage remains a separate source setting: for example, a W 80 kV source has no photons above 80 keV even if the accepted band ends at 120 keV. Rotation-scan/frame controls are disabled in Laue mode. Each signed HKL has its wavelength solved analytically: with `g = Rz(omega) U B hkl`, `lambda = -2 gx / dot(g,g)` and `E = 12.3984198433/lambda`. Only positive wavelengths, energies in the inclusive input band and rays intersecting the detector within max 2theta are retained. Detector tilts use the same geometry as monochromatic mode.
 
@@ -132,6 +132,16 @@ Both powder rings and grain spots use this ray-plane intersection. Powder curves
 
 The application rejects non-finite angles, edge-on/back-facing planes, and geometries placing any detector corner at X ≤ 0. Older settings files without tilt keys load with zero tilt. Applying a detector preset changes dimensions/pitches and recentres the beam, while retaining distance and tilts.
 
+## Crystal information
+
+Selecting a CIF or structure block updates the lattice parameters and `sgno`, followed by **Crystal system** and **Short name**. The short name is the international short Hermann–Mauguin symbol, as in the [list of space groups](https://en.wikipedia.org/wiki/List_of_space_groups): for Ni, **Cubic**, **Fm3̅m** (No. 225). Screw axes use subscripts (for example, P2₁/c) and negative rotation symbols use overbars. The symbol follows the resolved CIF setting; rhombohedral groups retain R in either hexagonal or rhombohedral axes. Unresolved space groups are reported explicitly rather than inferred from lattice lengths and angles.
+
+## Laue spot labels
+
+Check **Label top 10 strongest Laue spots** below the plot to show grain ID (zero-based), signed hkl and diffraction energy in keV to two decimal places. Uncheck it to hide the labels without recalculating. Labels are off initially and the control is disabled for monochromatic results. PNG snapshots include the displayed labels.
+
+The top ten are selected from groups passing the display threshold, ranked by summed spectral weight even when markers use Uniform weighting or Energy colouring. Zero-weight groups are excluded. For overlapping harmonics, the label gives the strongest contributing hkl and its own energy, followed by the number of additional harmonics; hover or double-click shows all contributions. Zooming keeps the same ranked selection and hides labels whose spots are outside the view. Labels use connecting lines and try alternate positions to reduce overlap in crowded patterns.
+
 ## Detector presets
 
 All dimensions are columns × rows.
@@ -186,14 +196,14 @@ Orientation CSV/TXT files contain one triple per row, optionally headed:
 phi1_deg,Phi_deg,phi2_deg
 0,0,0
 90,0,0
-301.891410,5.389322,57.994617
+269.178546842,27.3683882123,93.4990822005
 ```
 
 Comma or whitespace separators, blank lines and `#` comments are supported. The header `phi1,Phi,phi2` is also accepted. All angles must be finite, with Phi in [0,180] degrees; phi1 and phi2 are periodic modulo 360. Nine-column matrix files are rejected with an explanatory message.
 
 **Export orientations (EulerZXZ)** saves the calculated grain orientations as equivalent Bunge degree triples, including random-grain orientations. Exported phi1/phi2 lie in [0,360), Phi in [0,180]. At Phi=0 or 180, Euler angles are not unique: phi2 is set to zero and phi1 retains the equivalent rotation. No crystal-symmetry reduction is applied. Export/import preserves the rotation within numerical precision, not necessarily the original angle spelling. Random orientations remain Haar-uniform rotations; Euler angles are not independently sampled uniformly.
 
-The default Euler triple reproduces the earlier near-[001] example: `U.T * [0,0,1]` is approximately `[0.07964636,0.04977897,0.99557949]`. This is an illustrative orientation, not a universal Ni-superalloy orientation. Legacy JSON settings containing `single_u` are converted to Euler angles on load; legacy matrix CSV files must be converted separately.
+For the default Euler triple, `U.T * [0,0,1]` is approximately `[0.45885288,-0.02805727,0.88806916]`. Its cubic IPF-Z representative, scaled to a final component of one, is `[0.516686,0.031594,1]`. This is an illustrative orientation, not a universal Ni-superalloy orientation. Legacy JSON settings containing `single_u` are converted to Euler angles on load; legacy matrix CSV files must be converted separately.
 
 ## Relative intensities and limitations
 
