@@ -30,7 +30,7 @@ DEFAULTS = dict(cif=os.path.join(ROOT, 'examples', 'Ni.cif'), block='Ni', mode='
                 orientation_file='', number='200', seed='200', energy='40', distance='150', polarization='0.95',
                 preset='EIGER2 X CdTe 4M', columns='2068', rows='2162', pixel_y='75', pixel_z='75',
                 center_col='1033.5', center_row='1080.5', tilt_x='0', tilt_y='0', tilt_z='0', max_tth='40', start='0', end='2', step='0.25', minimum='0.1')
-DEFAULTS.update(beam_mode='Monochromatic', energy_min='5', energy_max='120', omega='0', source='W', tube_voltage='120',
+DEFAULTS.update(beam_mode='Monochromatic', energy_min='5', energy_max='80', omega='0', source='W', tube_voltage='120',
                 spectrum_file='', laue_polarization='0', colour='Relative weight', laue_weight='Spectral',
                 single_euler='269.178546842,27.3683882123,93.4990822005')
 
@@ -1305,7 +1305,7 @@ def smoke_test(report_path):
         report.update(ok=True, lines=len(result['lines']), spots=len(result['events']), presets=len(application.presets), examples=len(example_cifs()), tk=root.tk.call('info', 'patchlevel'))
         application.vars['beam_mode'].set('Polychromatic (Laue)')
         application.vars['mode'].set('Single orientation')
-        if application.vars['energy_min'].get() != '5' or application.vars['energy_max'].get() != '120':
+        if application.vars['energy_min'].get() != '5' or application.vars['energy_max'].get() != '80':
             raise RuntimeError('Laue default energy range is incorrect.')
         if application.vars['source'].get() != 'W' or application.vars['tube_voltage'].get() != '120':
             raise RuntimeError('Laue default source must be tungsten at 120 kV.')

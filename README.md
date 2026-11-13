@@ -38,11 +38,11 @@ The screenshot shows the Ni example at a fixed omega of 13°, using a W 120 kV s
 
 Choose **Polychromatic (Laue)** under Beam mode. Select **Single orientation**, **Random grains**, or **Imported orientations**. **Single EulerZXZ (Bunge)** accepts three angles `phi1, Phi, phi2` in degrees, in three labelled entries. The default is **269.178546842°, 27.3683882123°, 93.4990822005°**, placing sample Z about **27.37° from [001]**, near the [001]–[101] edge in a cubic IPF-Z plot. All grains remain at the origin.
 
-The default energy window is **5–120 keV**. Set **Fixed omega** in degrees. Edited or loaded energy limits are preserved when switching modes. Tube voltage remains a separate source setting: for example, a W 80 kV source has no photons above 80 keV even if the accepted band ends at 120 keV. Rotation-scan/frame controls are disabled in Laue mode. Each signed HKL has its wavelength solved analytically: with `g = Rz(omega) U B hkl`, `lambda = -2 gx / dot(g,g)` and `E = 12.3984198433/lambda`. Only positive wavelengths, energies in the inclusive input band and rays intersecting the detector within max 2theta are retained. Detector tilts use the same geometry as monochromatic mode.
+The default energy window is **5–80 keV**. Set **Fixed omega** in degrees. Edited or loaded energy limits are preserved when switching modes. Tube voltage remains a separate source setting: for example, a W 80 kV source has no photons above 80 keV even if the accepted band ends at 120 keV. Rotation-scan/frame controls are disabled in Laue mode. Each signed HKL has its wavelength solved analytically: with `g = Rz(omega) U B hkl`, `lambda = -2 gx / dot(g,g)` and `E = 12.3984198433/lambda`. Only positive wavelengths, energies in the inclusive input band and rays intersecting the detector within max 2theta are retained. Detector tilts use the same geometry as monochromatic mode.
 
 Source options:
 
-- Default on a fresh launch: **W (tungsten), 120 kV**, with the **5–120 keV** accepted energy band. User edits and explicitly loaded settings are retained when switching modes.
+- Default on a fresh launch: **W (tungsten), 120 kV**, with the **5–80 keV** accepted energy band. User edits and explicitly loaded settings are retained when switching modes.
 - **Flat:** constant relative photon spectral density per keV in the selected band.
 - **W:** bundled 40/80/120 kV reference tube spectra.
 - **Cr, Cu:** bundled 40/50 kV reference tube spectra, respecting the generator's supported voltage range.

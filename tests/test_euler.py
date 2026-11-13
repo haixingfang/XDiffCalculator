@@ -43,7 +43,7 @@ class EulerTests(unittest.TestCase):
         for actual, expected in zip(matrix[2], [0.45885287848271045, -0.028057266631399395, 0.8880691559204753]):
             self.assertAlmostEqual(actual, expected, places=12)
         self.assertAlmostEqual(math.degrees(math.acos(matrix[2][2])), 27.3683882123, places=9)
-        self.assertEqual((DEFAULTS['energy_min'], DEFAULTS['energy_max']), ('5', '120'))
+        self.assertEqual((DEFAULTS['energy_min'], DEFAULTS['energy_max']), ('5', '80'))
 
     def test_legacy_single_matrix_settings(self):
         settings = settings_from_disk(dict(single_u='0,-1,0,1,0,0,0,0,1'))
