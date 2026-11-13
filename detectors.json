@@ -4,6 +4,31 @@
     "source": "https://dectriswebsite-live-eac9c2f266324cfaa2c-57347c9.divio-media.com/filer_public/ac/f9/acf939f9-fdee-46e3-80b5-1be9582ab0fc/technicalspecification-pilatus3-r-1m-v120.pdf",
     "note": "Full image geometry only; module gaps and quantum efficiency are NOT simulated."
   },
+  "Pilatus4_1M": {
+    "columns": 1033, "rows": 1080, "pixel_y": 150, "pixel_z": 150,
+    "source": "User-specified detector configuration",
+    "note": "Full image geometry only; inactive gaps and detector response are not simulated."
+  },
+  "Pilatus4_4M": {
+    "columns": 2073, "rows": 2180, "pixel_y": 150, "pixel_z": 150,
+    "source": "User-specified detector configuration",
+    "note": "Full image geometry only; inactive gaps and detector response are not simulated."
+  },
+  "Rad_icon2329": {
+    "columns": 4608, "rows": 5890, "pixel_y": 49.5, "pixel_z": 49.5,
+    "source": "User-specified detector configuration",
+    "note": "Detector response and point-spread function are not modelled."
+  },
+  "ShadoBoxHS": {
+    "columns": 2304, "rows": 2940, "pixel_y": 49.5, "pixel_z": 49.5,
+    "source": "User-specified detector configuration",
+    "note": "Detector response and point-spread function are not modelled."
+  },
+  "Varex_industrial4343HE": {
+    "columns": 3072, "rows": 3072, "pixel_y": 139, "pixel_z": 139,
+    "source": "User-specified detector configuration",
+    "note": "Detector response and point-spread function are not modelled."
+  },
   "EIGER2 1M (Si)": {
     "columns": 1028, "rows": 1062, "pixel_y": 75, "pixel_z": 75,
     "source": "https://github.com/silx-kit/pyFAI/blob/main/src/pyFAI/detectors/_dectris.py",

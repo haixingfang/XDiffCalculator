@@ -139,6 +139,11 @@ All dimensions are columns × rows.
 | Detector | Image size | Pixel pitch [µm] |
 | --- | --- | --- |
 | PILATUS3 R 1M (Si) | 981 × 1043 | 172 |
+| Pilatus4_1M | 1033 × 1080 | 150 |
+| Pilatus4_4M | 2073 × 2180 | 150 |
+| Rad_icon2329 | 4608 × 5890 | 49.5 |
+| ShadoBoxHS | 2304 × 2940 | 49.5 |
+| Varex_industrial4343HE | 3072 × 3072 | 139 |
 | EIGER2 1M (Si) | 1028 × 1062 | 75 |
 | EIGER2 X CdTe 4M | 2068 × 2162 | 75 |
 | EIGER2 X CdTe 16M | 4148 × 4362 | 75 |
@@ -151,7 +156,7 @@ All dimensions are columns × rows.
 | CCD_quadro_24um | 2040 × 2040 | 24 |
 | Varian_127um | 1456 × 1840 | 127 |
 
-Camera pitches are effective pitches at the detection plane, already accounting for magnification. Detector dimensions include gap coordinates, but inactive module/chip gaps and detector response are not simulated. Manufacturer references are recorded in `detectors.json`.
+The default detector is EIGER2 X CdTe 4M. Camera pitches are effective pitches at the detection plane, already accounting for magnification. Detector dimensions include gap coordinates, but inactive module/chip gaps and detector response are not simulated. Manufacturer references or user-specified configurations are recorded in `detectors.json`.
 
 ## Rotation scans and orientations
 
