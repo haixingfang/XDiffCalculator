@@ -56,6 +56,8 @@ def settings_for_disk(settings):
 def settings_from_disk(settings):
     """Resolve explicitly marked bundled examples without changing external paths."""
     result = dict(settings)
+    if result.get('mode') == 'Single orientation':
+        result['mode'] = 'Multiple orientations'
     if 'single_u' in result:
         if 'single_euler' not in result:
             values = [float(value) for value in str(result['single_u']).replace(',', ' ').split()]
@@ -64,6 +66,8 @@ def settings_from_disk(settings):
             angles = matrix_to_euler([values[0:3], values[3:6], values[6:9]])
             result['single_euler'] = ','.join('{:.15g}'.format(value) for value in angles)
         del result['single_u']
+    if 'single_euler' in result:
+        multiple_orientations(result['single_euler'])
     value = result.get('cif', '')
     if isinstance(value, str) and value.startswith('@example/'):
         name = value[len('@example/'):]
@@ -108,8 +112,8 @@ def calculate(settings, cancel=None, progress=None):
         matrices = random_orientations(int(settings['number']), int(settings['seed']))
     elif settings['mode'] == 'Imported orientations':
         matrices = load_orientations(settings['orientation_file'])
-    elif settings['mode'] == 'Single orientation':
-        matrices = [single_orientation(settings['single_euler'])]
+    elif settings['mode'] == 'Multiple orientations':
+        matrices = multiple_orientations(settings['single_euler'])
     elif settings['mode'] != 'Powder rings':
         raise ValueError('Unknown sample mode.')
     if matrices:
@@ -132,15 +136,29 @@ def single_orientation(text):
     return euler_to_matrix(values)
 
 
+def multiple_orientations(text):
+    """Read one to ten semicolon-separated Bunge Euler triples in grain-ID order."""
+    rows = text.split(';')
+    if not 1 <= len(rows) <= 10:
+        raise ValueError('Enter between 1 and 10 orientations.')
+    matrices = []
+    for index, row in enumerate(rows):
+        try:
+            matrices.append(single_orientation(row))
+        except (ValueError, TypeError) as error:
+            raise ValueError('Orientation {}: {}'.format(index, error))
+    return matrices
+
+
 def calculate_laue(settings, cancel=None, progress=None):
     """Calculate an origin-centred fixed-omega Laue snapshot with approximate weights."""
     minimum, low, high, omega, angle = [float(settings[key]) for key in ('minimum', 'energy_min', 'energy_max', 'omega', 'max_tth')]
     if not all(math.isfinite(v) for v in (minimum, low, high, omega, angle)) or not 0 <= minimum <= 100 or not 0 < low < high or not 0 < angle < 90:
         raise ValueError('Require 0 < Emin < Emax, finite omega, 0 < max 2theta < 90, and display threshold in [0,100].')
     if settings['mode'] == 'Powder rings':
-        raise ValueError('Laue mode requires Single orientation, Random grains or Imported orientations; white-beam powder is not implemented.')
-    if settings['mode'] == 'Single orientation':
-        matrices = [single_orientation(settings['single_euler'])]
+        raise ValueError('Laue mode requires Multiple orientations, Random grains or Imported orientations; white-beam powder is not implemented.')
+    if settings['mode'] in ('Multiple orientations', 'Single orientation'):
+        matrices = multiple_orientations(settings['single_euler'])
     elif settings['mode'] == 'Random grains':
         matrices = random_orientations(int(settings['number']), int(settings['seed']))
     elif settings['mode'] == 'Imported orientations':
@@ -287,19 +305,20 @@ class Application:
         for key in ('cif', 'block'):
             self.vars[key].trace_add('write', self.schedule_crystal_info)
         self.update_crystal_info()
-        self.sample_mode = self.field('Sample mode', 'mode', choices=['Powder rings', 'Single orientation', 'Random grains', 'Imported orientations'])
-        ttk.Label(form, text='Single EulerZXZ (Bunge)').grid(row=self.row, column=0, columnspan=3, sticky='w', pady=(5, 0))
+        self.sample_mode = self.field('Sample mode', 'mode', choices=['Powder rings', 'Multiple orientations', 'Random grains', 'Imported orientations'])
+        euler_heading = ttk.Frame(form)
+        euler_heading.grid(row=self.row, column=0, columnspan=3, sticky='ew', pady=(5, 0))
+        ttk.Label(euler_heading, text='EulerZXZ (Bunge)').pack(side='left')
+        self.euler_count = tk.StringVar()
+        ttk.Label(euler_heading, textvariable=self.euler_count).pack(side='left', padx=8)
+        self.add_orientation_button = ttk.Button(euler_heading, text='+', width=3, command=self.add_orientation)
+        self.add_orientation_button.pack(side='right')
         self.row += 1
-        euler_frame = ttk.Frame(form)
-        euler_frame.grid(row=self.row, column=0, columnspan=3, sticky='ew')
+        self.euler_frame = ttk.Frame(form)
+        self.euler_frame.grid(row=self.row, column=0, columnspan=3, sticky='ew')
         self.row += 1
-        self.euler_values = [tk.StringVar(value=value) for value in self.vars['single_euler'].get().split(',')]
         self.updating_euler = False
-        for index, (label, variable) in enumerate(zip(('phi1 [deg]', 'Phi [deg]', 'phi2 [deg]'), self.euler_values)):
-            euler_frame.columnconfigure(index, weight=1)
-            ttk.Label(euler_frame, text=label).grid(row=0, column=index, sticky='w')
-            ttk.Entry(euler_frame, textvariable=variable, width=10).grid(row=1, column=index, sticky='ew', padx=(0, 4))
-            variable.trace_add('write', self.update_euler_setting)
+        self.update_euler_entries()
         self.vars['single_euler'].trace_add('write', self.update_euler_entries)
         ttk.Label(form, text='phi1, Phi, phi2 in degrees; crystal → sample.\nDefault: 27.37° from [001] in cubic IPF-Z.', wraplength=330).grid(row=self.row, column=0, columnspan=3, sticky='w')
         self.row += 1
@@ -431,21 +450,61 @@ class Application:
         root.after(100, self.poll)
 
     def update_euler_setting(self, *args):
-        """Store the three editable angle entries in the serializable settings field."""
+        """Store all rows; retain the legacy settings key for single-row compatibility."""
         if not self.updating_euler:
             self.updating_euler = True
-            self.vars['single_euler'].set(','.join(variable.get() for variable in self.euler_values))
+            self.vars['single_euler'].set(';'.join(','.join(variable.get() for variable in row) for row in self.euler_rows))
             self.updating_euler = False
 
     def update_euler_entries(self, *args):
-        """Refresh angle entries when loading settings or assigning an orientation."""
+        """Rebuild editable rows when loading settings or adding/removing a grain."""
         if not self.updating_euler:
-            values = self.vars['single_euler'].get().replace(',', ' ').split()
-            if len(values) == 3:
-                self.updating_euler = True
-                for variable, value in zip(self.euler_values, values):
-                    variable.set(value)
-                self.updating_euler = False
+            rows = self.vars['single_euler'].get().split(';')
+            self.updating_euler = True
+            for widget in self.euler_frame.winfo_children():
+                widget.destroy()
+            self.euler_rows, self.euler_widgets = [], []
+            for column, label in enumerate(('ID', 'phi1 [deg]', 'Phi [deg]', 'phi2 [deg]')):
+                ttk.Label(self.euler_frame, text=label).grid(row=0, column=column, sticky='w')
+            for index, text in enumerate(rows):
+                values = [value.strip() for value in text.split(',')] if ',' in text else text.split()
+                values = (values + ['', '', ''])[:3]
+                variables = [tk.StringVar(value=value) for value in values]
+                self.euler_rows.append(variables)
+                ttk.Label(self.euler_frame, text=str(index)).grid(row=index+1, column=0, padx=(0, 4))
+                for column, variable in enumerate(variables, 1):
+                    self.euler_frame.columnconfigure(column, weight=1)
+                    entry = ttk.Entry(self.euler_frame, textvariable=variable, width=9)
+                    entry.grid(row=index+1, column=column, sticky='ew', padx=(0, 4), pady=2)
+                    self.euler_widgets.append(entry)
+                    variable.trace_add('write', self.update_euler_setting)
+                if len(rows) > 1:
+                    button = ttk.Button(self.euler_frame, text='−', width=2, command=lambda index=index: self.remove_orientation(index))
+                    button.grid(row=index+1, column=4)
+                    self.euler_widgets.append(button)
+            self.euler_values = self.euler_rows[0]
+            self.euler_count.set('{} / 10'.format(len(rows)))
+            self.updating_euler = False
+            self.update_orientation_controls()
+
+    def update_orientation_controls(self):
+        """Enable manual rows only in the corresponding sample mode."""
+        enabled = self.vars['mode'].get() == 'Multiple orientations'
+        for widget in self.euler_widgets:
+            widget.configure(state='normal' if enabled else 'disabled')
+        self.add_orientation_button.configure(state='normal' if enabled and len(self.euler_rows) < 10 else 'disabled')
+
+    def add_orientation(self):
+        """Append an editable copy of the current default, up to ten grains."""
+        if len(self.euler_rows) < 10:
+            self.vars['single_euler'].set(self.vars['single_euler'].get() + ';' + DEFAULTS['single_euler'])
+
+    def remove_orientation(self, index):
+        """Remove a row, retaining at least one orientation and consecutive grain IDs."""
+        rows = self.vars['single_euler'].get().split(';')
+        if len(rows) > 1:
+            del rows[index]
+            self.vars['single_euler'].set(';'.join(rows))
 
     def schedule_crystal_info(self, *args):
         """Clear old metadata immediately and coalesce edits to the selected CIF/block."""
@@ -598,6 +657,7 @@ class Application:
 
     def update_scan_inputs(self, *args):
         """Explain scan inputs and disable them for orientation-averaged powder."""
+        self.update_orientation_controls()
         powder = self.vars['mode'].get() == 'Powder rings' or self.vars['beam_mode'].get() == 'Polychromatic (Laue)'
         for widget in self.scan_fields:
             widget.configure(state='disabled' if powder else 'normal')
@@ -613,10 +673,10 @@ class Application:
     def update_beam_inputs(self, *args):
         """Enable beam-specific inputs without changing a completed calculation."""
         laue = self.vars['beam_mode'].get() == 'Polychromatic (Laue)'
-        modes = ['Single orientation', 'Random grains', 'Imported orientations']
+        modes = ['Multiple orientations', 'Random grains', 'Imported orientations']
         self.sample_mode.configure(values=modes if laue else ['Powder rings'] + modes)
         if laue and self.vars['mode'].get() == 'Powder rings':
-            self.vars['mode'].set('Single orientation')
+            self.vars['mode'].set('Multiple orientations')
         self.energy_field.configure(state='disabled' if laue else 'normal')
         self.mono_polarization.configure(state='disabled' if laue else 'normal')
         for widget in self.laue_controls:
@@ -1304,7 +1364,7 @@ def smoke_test(report_path):
                     raise RuntimeError('PNG snapshot size/DPI mismatch.')
         report.update(ok=True, lines=len(result['lines']), spots=len(result['events']), presets=len(application.presets), examples=len(example_cifs()), tk=root.tk.call('info', 'patchlevel'))
         application.vars['beam_mode'].set('Polychromatic (Laue)')
-        application.vars['mode'].set('Single orientation')
+        application.vars['mode'].set('Multiple orientations')
         if application.vars['energy_min'].get() != '5' or application.vars['energy_max'].get() != '80':
             raise RuntimeError('Laue default energy range is incorrect.')
         if application.vars['source'].get() != 'W' or application.vars['tube_voltage'].get() != '120':
@@ -1316,6 +1376,27 @@ def smoke_test(report_path):
         if application.vars['single_euler'].get() != '15,20,30':
             raise RuntimeError('Euler settings did not follow entries.')
         application.vars['single_euler'].set(DEFAULTS['single_euler'])
+        application.euler_values[0].set('')
+        application.add_orientation_button.invoke()
+        if application.euler_rows[0][0].get() != '' or application.euler_rows[0][1].get() != DEFAULTS['single_euler'].split(',')[1]:
+            raise RuntimeError('Adding a row must preserve unfinished angle edits.')
+        application.vars['single_euler'].set(DEFAULTS['single_euler'])
+        for index in range(12):
+            application.add_orientation()
+        if len(application.euler_rows) != 10 or str(application.add_orientation_button.cget('state')) != 'disabled':
+            raise RuntimeError('Manual orientations must stop at ten rows.')
+        application.euler_rows[1][0].set('42')
+        restored = settings_from_disk(settings_for_disk(application.snapshot()))
+        if len(multiple_orientations(restored['single_euler'])) != 10 or restored['single_euler'].split(';')[1].split(',')[0] != '42':
+            raise RuntimeError('Multiple orientation edits/settings did not round trip.')
+        application.remove_orientation(1)
+        if len(application.euler_rows) != 9 or str(application.add_orientation_button.cget('state')) != 'normal':
+            raise RuntimeError('Removing an orientation did not re-enable addition.')
+        application.vars['single_euler'].set(DEFAULTS['single_euler'])
+        application.remove_orientation(0)
+        if len(application.euler_rows) != 1:
+            raise RuntimeError('The last orientation must be retained.')
+        report['multiple_orientation_controls'] = True
         if any(str(widget.cget('state')) != 'disabled' for widget in application.scan_fields):
             raise RuntimeError('Laue rotation-scan inputs must be disabled.')
         for target, voltages in TUBE_VOLTAGES.items():

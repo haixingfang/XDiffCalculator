@@ -6,10 +6,38 @@ import os
 import tempfile
 import unittest
 from orientations import euler_to_matrix, matrix_to_euler, load_orientations, save_orientations, random_orientations
-from app import DEFAULTS, single_orientation, settings_from_disk
+from app import DEFAULTS, single_orientation, multiple_orientations, settings_from_disk, calculate
 
 
 class EulerTests(unittest.TestCase):
+    def test_multiple_orientation_validation_and_legacy_mode(self):
+        self.assertEqual(len(multiple_orientations(';'.join(['0,0,0']*10))), 10)
+        for text in ('', '0,0', '0,0,0;', '0,nan,0', ';'.join(['0,0,0']*11)):
+            with self.assertRaises(ValueError):
+                multiple_orientations(text)
+        settings = settings_from_disk(dict(mode='Single orientation', single_euler='10,20,30'))
+        self.assertEqual(settings['mode'], 'Multiple orientations')
+        self.assertEqual(settings['single_euler'], '10,20,30')
+
+    def test_multiple_orientation_simulation_and_export(self):
+        triples = [DEFAULTS['single_euler'], '10,20,30']
+        for beam in ('Monochromatic', 'Polychromatic (Laue)'):
+            settings = dict(DEFAULTS, beam_mode=beam, mode='Multiple orientations', start='-180', end='180', energy_max='40')
+            combined = calculate(dict(settings, single_euler=';'.join(triples)))
+            self.assertEqual(len(combined['matrices']), 2)
+            for grain, triple in enumerate(triples):
+                single = calculate(dict(settings, single_euler=triple))
+                actual = [dict(event, grain=0) for event in combined['events'] if event['grain'] == grain]
+                self.assertTrue(single['events'])
+                self.assertEqual(actual, single['events'])
+            with tempfile.TemporaryDirectory() as folder:
+                path = os.path.join(folder, 'multiple.csv')
+                save_orientations(path, combined['matrices'])
+                restored = load_orientations(path)
+                self.assertEqual(len(restored), 2)
+                for first, second in zip(restored, combined['matrices']):
+                    self.assert_matrix_close(first, second)
+
     def assert_matrix_close(self, first, second, tolerance=1e-10):
         self.assertLess(max(abs(a - b) for row1, row2 in zip(first, second) for a, b in zip(row1, row2)), tolerance)
 

@@ -1,4 +1,11 @@
-# Validation record — 2026-11-13
+# Validation record — 2026-11-17
+
+## Multiple manual orientations
+
+- Replaced the Single orientation GUI mode with Multiple orientations, initially retaining one row with the existing default Euler angles. Boxed + adds rows up to ten; minus removes rows while retaining at least one. Row IDs are consecutive and zero-based.
+- Both monochromatic and Laue simulations consume all entered orientations. Saved settings and orientation exports retain every row; old Single orientation settings migrate automatically.
+- All 45 unit tests passed. New checks compare two-grain simulations against separate single-grain calculations in both beam modes, verify exported rotations, reject malformed/excess input, and test old-mode migration.
+- Source and rebuilt standalone GUI smoke tests passed, including entry synchronization, incomplete edits during addition, the ten-row limit, removal, settings serialization, and retaining the final row.
 
 ## Default Euler orientation and crystal-system display
 
